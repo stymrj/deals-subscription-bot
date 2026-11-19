@@ -375,6 +375,25 @@ test('/start and /help each list all 9 stores (one shared list, no drift)', asyn
   }
 });
 
+// Regression (2026-11-19): the welcome/help command list used raw
+// "<keyword>" / "<text>" placeholders inside parse_mode=HTML replies.
+// Telegram rejects those as unsupported start tags ("can't parse
+// entities"), so /start and /help failed with a 400 and the bot looked
+// dead. Placeholders must be HTML-escaped; plain-text usage replies
+// (no parse_mode) keep the literal form.
+test('HTML replies carry no raw angle-bracket placeholders (Telegram parse)', async () => {
+  const { bot, telegram } = await setup();
+  const stripAllowed = (t) => t.replace(/<\/?b>/g, '');
+  for (const cmd of ['/start', '/help']) {
+    telegram.calls.length = 0;
+    await bot.handleUpdate(messageUpdate(USER_ID, cmd));
+    const reply = telegram.calls.find((c) => c.method === 'sendMessage');
+    assert.ok(reply, `expected a ${cmd} reply`);
+    assert.ok(!/<[a-zA-Z]/.test(stripAllowed(reply.text)), `${cmd} has a raw <tag>: ` + reply.text);
+    assert.ok(reply.text.includes('&lt;keyword&gt;'), `${cmd} must show the escaped placeholder: ` + reply.text);
+  }
+});
+
 test('cadence copy: welcome/help/subscribe/status say every 15 minutes, no 9 AM / morning / daily left', async () => {
   const { bot, telegram } = await setup();
   const stale = /9 AM|every morning|daily digest|Daily Digest|Daily Deals/i;

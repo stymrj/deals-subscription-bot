@@ -65,20 +65,20 @@ function commandsText() {
     `/deals — matching deals right now, on demand\n` +
     `/hot — biggest saving right now\n` +
     `/top — steepest discount right now\n` +
-    `/search <keyword> — find deals by name\n\n` +
+    `/search &lt;keyword&gt; — find deals by name\n\n` +
     `⚙️ Your digest:\n` +
     `/start — subscribe for free, or check status\n` +
     `/status — your subscription status and next digest time\n` +
     `/stores — pick which stores your digest covers\n` +
     `/setdiscount <10-90> — only show deals at that discount or more\n\n` +
     `🔔 Watchlist:\n` +
-    `/watch <keyword> — alert me when a matching deal appears\n` +
-    `/unwatch <keyword> — stop watching a keyword\n` +
+    `/watch &lt;keyword&gt; — alert me when a matching deal appears\n` +
+    `/unwatch &lt;keyword&gt; — stop watching a keyword\n` +
     `/watchlist — your watched keywords\n\n` +
     `/myid — your numeric Telegram id\n` +
     `/stop — stop the deal updates\n` +
     `/help — this help\n\n` +
-    `Admin: /subscribers, /broadcast <text>`
+    `Admin: /subscribers, /broadcast &lt;text&gt;`
   );
 }
 
