@@ -1,46 +1,67 @@
 // digest.js — build the subscriber digest (Telegram HTML).
-// Pure functions, no I/O: formatDigest(dealsByStore, config) -> string[]
-// (already split into sendable messages) and splitMessages(blocks, ...).
-// Cadence: fresh deals every 15 minutes (dedupe lives in the jobs layer),
-// so stores with no new deals are omitted entirely and an empty digest
-// sends nothing (returns []).
+// Pure functions, no I/O: formatDigest(dealsByStore, config) -> message[]
+// where each message is { text, buttons } (buttons: [{ text, url }] —
+// one "Grab Deal" URL button per deal, in order). Messages are already
+// split into sendable units of <= MAX_LEN chars and <= MAX_MESSAGES
+// messages. Cadence: fresh deals every 15 minutes (dedupe lives in the
+// jobs layer), so stores with no new deals are omitted entirely and an
+// empty digest sends nothing (returns []).
 // All message formatting lives in src/design.js; this module only
 // assembles the digest blocks from it.
 'use strict';
 
 const { STORE_ORDER } = require('./feed');
 const design = require('./design');
-const { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine } = design;
+const { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine, dealCard, dealButtons } = design;
 const MAX_LEN = design.MAX_LEN;
 const MAX_MESSAGES = 2;
+const MAX_BUTTONS_PER_MESSAGE = 8; // wall of buttons is ugly; the title link still works
 
-// Split pre-built blocks (each block is one indivisible unit: header, one
-// store heading, ONE deal line, footer) into <= maxMessages messages of
-// <= maxLen chars. Splits happen only BETWEEN blocks, never inside one.
-// If blocks still overflow maxMessages, whole trailing deals are dropped
+// Split pre-built units into <= maxMessages messages of <= maxLen chars.
+// A unit is { text, isDeal?, buttons? }: header, one store heading, ONE
+// deal card, footer. Splits happen only BETWEEN units, never inside one.
+// If units still overflow maxMessages, whole trailing deals are dropped
 // (lowest priority = last stores) and the last message notes the count.
-// Only deal blocks ('• ...') count towards the dropped-deals note;
-// headings/footer dropped with them are not deals.
-function splitMessages(blocks, maxLen = MAX_LEN, maxMessages = MAX_MESSAGES) {
+// Only deal units count towards the dropped-deals note; headings/footer
+// dropped with them are not deals. Buttons travel with their deal's
+// message (capped per message; extras are dropped silently — the title
+// link in the card still opens the deal).
+function splitMessages(units, maxLen = MAX_LEN, maxMessages = MAX_MESSAGES) {
   const messages = [];
-  let cur = '';
+  let curText = '';
+  let curButtons = [];
   let dropped = 0;
-  for (const block of blocks) {
-    if (messages.length >= maxMessages) { if (block.startsWith('• ')) dropped++; continue; } // cap hit: drop whole trailing blocks
-    const candidate = cur ? cur + '\n' + block : block;
-    if (candidate.length <= maxLen) { cur = candidate; continue; }
-    if (cur) messages.push(cur);
-    if (messages.length >= maxMessages) { if (block.startsWith('• ')) dropped++; cur = ''; continue; }
-    cur = block.length > maxLen ? block.slice(0, maxLen) : block; // safety net; deal lines are pre-shortened
+  const push = () => {
+    if (curText) messages.push({ text: curText, buttons: curButtons });
+    curText = '';
+    curButtons = [];
+  };
+  for (const unit of units) {
+    const text = typeof unit === 'string' ? unit : unit.text;
+    const isDeal = typeof unit === 'object' && !!unit.isDeal;
+    const buttons = (typeof unit === 'object' && Array.isArray(unit.buttons)) ? unit.buttons : [];
+    if (messages.length >= maxMessages) { if (isDeal) dropped++; continue; } // cap hit: drop whole trailing units
+    const candidate = curText ? curText + '\n' + text : text;
+    if (candidate.length <= maxLen) {
+      curText = candidate;
+      for (const b of buttons) {
+        if (curButtons.length < MAX_BUTTONS_PER_MESSAGE) curButtons.push(b);
+      }
+      continue;
+    }
+    if (curText) push();
+    if (messages.length >= maxMessages) { if (isDeal) dropped++; continue; }
+    curText = text.length > maxLen ? text.slice(0, maxLen) : text; // safety net; deal cards are pre-shortened
+    curButtons = buttons.slice(0, MAX_BUTTONS_PER_MESSAGE);
   }
-  if (cur) {
-    if (messages.length >= maxMessages) { if (cur.startsWith('• ')) dropped++; }
-    else messages.push(cur);
+  if (curText) {
+    if (messages.length >= maxMessages) { /* trailing unit beyond the cap: dropped with it */ }
+    else messages.push({ text: curText, buttons: curButtons });
   }
   if (dropped > 0 && messages.length) {
     const note = `\n… +${dropped} more deal${dropped === 1 ? '' : 's'} in the next update`;
     const last = messages[messages.length - 1];
-    if (last.length + note.length <= maxLen) messages[messages.length - 1] = last + note;
+    if (last.text.length + note.length <= maxLen) last.text = last.text + note;
   }
   return messages;
 }
@@ -67,21 +88,28 @@ function formatDigest(dealsByStore, config = {}) {
   }
   if (!perStore.length) return []; // no deals in any store: send nothing
 
-  const blocks = [];
-  blocks.push(
-    design.header('Fresh Deals', dateTimeLabel) + '\n' + design.cadenceLine(min) +
-    '\nFree subscriber digest — prices change fast, check the link before buying.',
-  );
+  const units = [];
+  units.push({
+    text:
+      design.header('Fresh Deals', dateTimeLabel) + '\n' + design.cadenceLine(min) +
+      '\nFree subscriber digest — prices change fast, check the link before buying.',
+  });
 
   for (const [store, deals] of perStore) {
-    blocks.push(`\n${design.sectionTitle(store)}`);
-    // Reserve room for the header/store-heading/footer blocks so a
+    units.push({ text: `\n${design.sectionTitle(store)}` });
+    // Reserve room for the header/store-heading/footer units so a
     // single near-limit deal still fits in one message with them.
-    for (const deal of deals) blocks.push(dealLine(deal, store, MAX_LEN - 350));
+    for (const deal of deals) {
+      units.push({
+        text: dealCard(deal, store, MAX_LEN - 350),
+        isDeal: true,
+        buttons: dealButtons(deal),
+      });
+    }
   }
-  blocks.push(design.footer());
+  units.push({ text: design.footer() });
 
-  return splitMessages(blocks, MAX_LEN, MAX_MESSAGES);
+  return splitMessages(units, MAX_LEN, MAX_MESSAGES);
 }
 
-module.exports = { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };
+module.exports = { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine, dealCard, dealButtons, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };

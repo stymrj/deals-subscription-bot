@@ -40,7 +40,7 @@ const { MAX_LEN, STORE_EMOJI } = design;
 // Pinned functional emoji — the ONLY non-store emoji allowed in any bot
 // message, plus the nine store emoji from STORE_EMOJI.
 const ALLOWED_EMOJI = new Set(
-  ['🛒', '📅', '🔔', '✅', '❌', '🎉', ...Object.values(STORE_EMOJI)]
+  ['🛒', '📅', '🔔', '✅', '❌', '🎉', '🔥', '⚡', '💰', '💸', '🏷️', '🎯', '🔍', '⚙️', '🔄', ...Object.values(STORE_EMOJI)]
     // Strip U+FE0F so '🛍️' matches its base code point '🛍' when scanned.
     .map((e) => e.replace(/\uFE0F/g, ''))
 );
@@ -148,11 +148,11 @@ test('design unit: header / footer / cadenceLine are exact', () => {
   assert.equal(design.footer(), '\n—\nPriceDrop Hunter · /start · /stores · /stop');
   assert.equal(
     design.cadenceLine(50),
-    'Fresh deals every 15 minutes · 50%+ off · duplicates removed'
+    '⚡ Fresh deals every 15 minutes · 50%+ off · duplicates removed'
   );
   assert.equal(
     design.cadenceLine(30),
-    'Fresh deals every 15 minutes · 30%+ off · duplicates removed'
+    '⚡ Fresh deals every 15 minutes · 30%+ off · duplicates removed'
   );
 });
 
@@ -188,19 +188,72 @@ test('design unit: dealLine truncates a long title, never cuts mid-deal', () => 
 test('design unit: noDealsLine is the pinned one-liner', () => {
   assert.equal(
     design.noDealsLine(),
-    'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.'
+    '🔍 No deals right now matching your stores & discount — fresh deals land every 15 minutes, so check back soon, or try /deals, /hot or /search.'
   );
 });
 
-test('design unit: watchAlert is alert line + dealLine + footer, keyword escaped', () => {
+test('design unit: discountBadge tiers, savingsText, categoryTag, dealButtons', () => {
+  assert.equal(design.discountBadge(95), '🔥 95% OFF');
+  assert.equal(design.discountBadge(90), '🔥 90% OFF');
+  assert.equal(design.discountBadge(80), '⚡ 80% OFF');
+  assert.equal(design.discountBadge(75), '⚡ 75% OFF');
+  assert.equal(design.discountBadge(70), '🎯 70% OFF');
+  assert.equal(design.discountBadge(60), '🎯 60% OFF');
+  assert.equal(design.discountBadge(55), '✅ 55% OFF');
+  assert.equal(design.discountBadge(50), '✅ 50% OFF');
+  assert.equal(design.savingsText(MIXER), '💸 save ₹3,500');
+  assert.equal(design.savingsText({ price: 100, mrp: 100 }), '', 'no saving when mrp == price');
+  assert.equal(design.categoryTag({ cat: 'Grocery › Oils' }), '🏷️ Grocery › Oils');
+  assert.equal(design.categoryTag({ cat: '' }), '', 'empty cat renders nothing');
+  assert.equal(design.categoryTag({}), '', 'missing cat renders nothing');
+  assert.deepEqual(design.dealButtons(MIXER), [{ text: '🛒 Grab Deal', url: 'https://example.com/mixer' }]);
+  assert.deepEqual(design.dealButtons({ ...MIXER, url: '' }), [], 'no URL means no button');
+});
+
+test('design unit: dealCard is badge + linked title + price/savings + category, escaped, truncated', () => {
+  const card = design.dealCard(MIXER, 'Zepto');
+  assert.equal(
+    card,
+    '🎯 70% OFF · 🚀 Zepto\n' +
+    '<a href="https://example.com/mixer">Mixer Grinder</a>\n' +
+    '💰 <b>₹1,500</b> <s>₹5,000</s> · 💸 save ₹3,500'
+  );
+  // With a category the card gains a 🏷️ line; without one it stays 3 lines.
+  const withCat = design.dealCard({ ...MIXER, cat: 'Grocery › Ghee' }, 'Zepto');
+  assert.ok(withCat.endsWith('\n🏷️ Grocery › Ghee'), 'category line: ' + withCat);
+  assert.equal(withCat.split('\n').length, 4, 'card with category is 4 lines');
+  assert.equal(card.split('\n').length, 3, 'card without category is 3 lines');
+  // No URL: plain title, no link tags, button list empty — but the card stays.
+  const noUrl = design.dealCard({ ...MIXER, url: '' }, 'Blinkit');
+  assert.ok(!noUrl.includes('<a'), 'empty url must produce no link tags');
+  assert.ok(noUrl.includes('Mixer Grinder') && noUrl.includes('⚡ Blinkit'));
+  // Escaping: title, category and URL must all be escaped.
+  const tricky = design.dealCard(
+    { title: 'A <B> & "C"', price: 100, mrp: 200, disc: 50, url: 'https://example.com/?a=1&b=2', cat: 'X <Y>' },
+    'Zepto'
+  );
+  assert.ok(tricky.includes('A &lt;B&gt; &amp; &quot;C&quot;'), 'title must be escaped: ' + tricky);
+  assert.ok(tricky.includes('href="https://example.com/?a=1&amp;b=2"'), 'url must be escaped: ' + tricky);
+  assert.ok(tricky.includes('🏷️ X &lt;Y&gt;'), 'category must be escaped: ' + tricky);
+  // Long title truncates inside the card, price/savings survive.
+  const long = design.dealCard(LONG_DEAL, 'Zepto');
+  assert.ok(long.length <= MAX_LEN, `dealCard ${long.length} chars exceeds ${MAX_LEN}`);
+  assert.ok(long.includes('…'), 'truncated title must end with an ellipsis');
+  assert.ok(!long.includes(LONG_DEAL.title), 'the full 5000-char title must not survive');
+  assert.ok(long.includes('💰 <b>₹100</b>'), 'price part must survive intact: ' + long.slice(-120));
+  assert.ok(long.includes('🔥 90% OFF'), 'badge must survive intact');
+});
+
+test('design unit: watchAlert is alert line + dealCard + footer, keyword escaped', () => {
   const expected =
     '🔔 <b>Watch alert: "mixer"</b>\n' +
-    design.dealLine(MIXER, 'Zepto') +
+    design.dealCard(MIXER, 'Zepto') +
     design.footer();
   assert.equal(design.watchAlert('mixer', MIXER, 'Zepto'), expected);
   const tricky = design.watchAlert('a <b> & "q"', MIXER, 'Zepto');
   assert.ok(tricky.includes('Watch alert: "a &lt;b&gt; &amp; &quot;q&quot;"'), 'keyword must be escaped: ' + tricky);
   assert.ok(tricky.endsWith(design.footer()), 'watch alert ends with the shared footer');
+  assert.ok(tricky.includes('🛒 Grab Deal') === false, 'watch alert text carries no button (buttons ride on reply_markup)');
 });
 
 test('design unit: only pinned emoji appear in helper output', () => {
@@ -210,6 +263,8 @@ test('design unit: only pinned emoji appear in helper output', () => {
     design.cadenceLine(50),
     design.noDealsLine(),
     design.watchAlert('mixer', MIXER, 'Zepto'),
+    design.dealCard(MIXER, 'Zepto'),
+    design.dealCard({ ...MIXER, cat: 'Grocery › Ghee', disc: 95 }, 'Zepto'),
     ...STORE_ORDER.map((s) => design.sectionTitle(s)),
     ...STORE_ORDER.map((s) => design.dealLine(MIXER, s)),
   ];
@@ -297,9 +352,9 @@ test('design consistency: /start, digest, /deals and /top share the same header(
   // the header/cadence are inline, not helper-built.
   const digestMsgs = formatDigest(FEEDS, { minDiscount: 50, date: FIXED_DATE });
   assert.ok(digestMsgs.length >= 1, 'fixture digest must produce a message');
-  assert.ok(digestMsgs[0].startsWith(DIGEST_HEADER), 'digest must open with header("Fresh Deals", date): ' + digestMsgs[0]);
-  assert.ok(digestMsgs.at(-1).endsWith(design.footer()), 'digest must end with the shared footer');
-  for (const m of digestMsgs) assert.ok(m.length <= MAX_LEN, `digest message ${m.length} chars exceeds ${MAX_LEN}`);
+  assert.ok(digestMsgs[0].text.startsWith(DIGEST_HEADER), 'digest must open with header("Fresh Deals", date): ' + digestMsgs[0].text);
+  assert.ok(digestMsgs.at(-1).text.endsWith(design.footer()), 'digest must end with the shared footer');
+  for (const m of digestMsgs) assert.ok(m.text.length <= MAX_LEN, `digest message ${m.text.length} chars exceeds ${MAX_LEN}`);
 
   // /deals — MERGE-GATED (uses formatDigest): same header/footer as the digest.
   // /deals renders the live date (formatDigest defaults to now), so compare
@@ -322,14 +377,14 @@ test('design consistency: /start, digest, /deals and /top share the same header(
   assert.ok(topReply.text.endsWith(design.footer()), '/top must end with the shared footer');
 });
 
-test('design consistency: dealLine is byte-identical across digest, /deals, /top and watch alerts', async () => {
+test('design consistency: dealCard is byte-identical across digest, /deals, /top and watch alerts', async () => {
   // The Mixer deal (70%, Zepto) is the best deal, so it is the /top pick
   // and the watch-alert deal for keyword 'mixer' — one deal object, four surfaces.
-  const expected = design.dealLine(MIXER, 'Zepto');
+  const expected = design.dealCard(MIXER, 'Zepto');
 
   // Digest — MERGE-GATED (old digest.js dealLine: price not bold, bare store name).
   const digestMsgs = formatDigest(FEEDS, { minDiscount: 50, date: FIXED_DATE });
-  assert.ok(digestMsgs.join('\n').includes(expected), 'digest must contain the shared dealLine byte-for-byte');
+  assert.ok(digestMsgs.map((m) => m.text).join('\n').includes(expected), 'digest must contain the shared dealCard byte-for-byte');
 
   const { bot } = await setupBot(async () => FEEDS);
 
@@ -337,7 +392,7 @@ test('design consistency: dealLine is byte-identical across digest, /deals, /top
   await bot.handleUpdate(messageUpdate(USER_ID, '/deals'));
   assert.ok(
     userMessages(USER_ID).map((r) => r.text).join('\n').includes(expected),
-    '/deals must contain the same dealLine byte-for-byte'
+    '/deals must contain the same dealCard byte-for-byte'
   );
 
   // /top — MERGE-GATED (old /top uses the old digest.js dealLine).
@@ -345,7 +400,7 @@ test('design consistency: dealLine is byte-identical across digest, /deals, /top
   await bot.handleUpdate(messageUpdate(USER_ID, '/top'));
   assert.ok(
     userMessages(USER_ID).at(-1).text.includes(expected),
-    '/top must contain the same dealLine byte-for-byte'
+    '/top must contain the same dealCard byte-for-byte'
   );
 
   // Watch alert: covered by its own test below (W3-owned, passes here).
@@ -354,9 +409,9 @@ test('design consistency: dealLine is byte-identical across digest, /deals, /top
 test('design consistency: watch alert via runDigest equals design.watchAlert exactly', async () => {
   // PASSES in this copy — the only cross-surface case that touches
   // W3-owned code only (src/jobs.js + src/design.js). Proves the watch
-  // alert carries the same dealLine byte-for-byte as the other surfaces
+  // alert carries the same dealCard byte-for-byte as the other surfaces
   // will once W1/W2 land.
-  const expected = design.dealLine(MIXER, 'Zepto');
+  const expected = design.dealCard(MIXER, 'Zepto');
   const alertBot = { sent: [], telegram: { async sendMessage(chatId, text, opts) { alertBot.sent.push({ chatId, text, opts }); } } };
   const alertDb = {
     async getActiveSubscribers() { return [{ telegram_id: USER_ID, status: 'active' }]; },
@@ -375,14 +430,14 @@ test('design consistency: watch alert via runDigest equals design.watchAlert exa
   assert.equal(res.alertsSent, 1);
   const alert = alertBot.sent.find((s) => s.text.includes('Watch alert:'));
   assert.ok(alert, 'expected a watch alert');
-  assert.ok(alert.text.includes(expected), 'watch alert must contain the same dealLine byte-for-byte');
+  assert.ok(alert.text.includes(expected), 'watch alert must contain the same dealCard byte-for-byte');
   assert.equal(alert.text, design.watchAlert('mixer', MIXER, 'Zepto'), 'watch alert must equal design.watchAlert() exactly');
   assert.ok(alert.text.includes(design.storeLabel('Zepto')), 'watch alert must render the store via storeLabel()');
 });
 
 test('design consistency: every store has exactly one emoji, identical everywhere', async () => {
   // Digest headings — MERGE-GATED (old digest.js: bare '<b>Zepto</b>').
-  const digestText = formatDigest(ALL_STORES_FEEDS, { minDiscount: 50, date: FIXED_DATE }).join('\n');
+  const digestText = formatDigest(ALL_STORES_FEEDS, { minDiscount: 50, date: FIXED_DATE }).map((m) => m.text).join('\n');
   for (const store of STORE_ORDER) {
     assert.ok(digestText.includes(design.sectionTitle(store)), `digest must head ${store} with sectionTitle(): ` + digestText);
     assert.ok(!digestText.includes(`<b>${store}</b>`), `digest must not show a bare ${store} heading`);
@@ -425,11 +480,11 @@ test('design consistency: no message exceeds 3900 chars; long titles truncate, n
   // kept as the merged-tree guard.
   const digestMsgs = formatDigest(LONG_FEEDS, { minDiscount: 50, date: FIXED_DATE });
   assert.ok(digestMsgs.length >= 1);
-  for (const m of digestMsgs) assert.ok(m.length <= MAX_LEN, `digest message ${m.length} chars exceeds ${MAX_LEN}`);
-  const digestText = digestMsgs.join('\n');
+  for (const m of digestMsgs) assert.ok(m.text.length <= MAX_LEN, `digest message ${m.text.length} chars exceeds ${MAX_LEN}`);
+  const digestText = digestMsgs.map((m) => m.text).join('\n');
   assert.ok(digestText.includes('…'), 'long title must be truncated with an ellipsis');
   assert.ok(!digestText.includes(LONG_DEAL.title), 'the full 5000-char title must not survive');
-  assert.ok(digestText.includes('(90% off)'), 'price part must survive intact');
+  assert.ok(digestText.includes('90% OFF'), 'badge must survive intact');
 
   const { bot } = await setupBot(async () => LONG_FEEDS);
 
@@ -438,11 +493,11 @@ test('design consistency: no message exceeds 3900 chars; long titles truncate, n
   for (const r of userMessages(USER_ID)) {
     assert.ok(r.text.length <= MAX_LEN, `/deals message ${r.text.length} chars exceeds ${MAX_LEN}`);
   }
-  assert.ok(userMessages(USER_ID).map((r) => r.text).join('\n').includes('(90% off)'));
+  assert.ok(userMessages(USER_ID).map((r) => r.text).join('\n').includes('90% OFF'));
 
   // /top — MERGE-GATED: old /top prepends its header to an already-3900
   // char dealLine, so the message can reach ~3931 chars. The merged /top
-  // must shorten the dealLine to fit header + footer inside the cap.
+  // must shorten the dealCard to fit header + footer inside the cap.
   apiCalls.length = 0;
   await bot.handleUpdate(messageUpdate(USER_ID, '/top'));
   const topReply = userMessages(USER_ID).at(-1);
@@ -450,7 +505,7 @@ test('design consistency: no message exceeds 3900 chars; long titles truncate, n
   assert.ok(topReply.text.length <= MAX_LEN, `/top message ${topReply.text.length} chars exceeds ${MAX_LEN}: ` + topReply.text.slice(0, 80));
   assert.ok(topReply.text.includes('…'), '/top long title must be truncated with an ellipsis');
   assert.ok(!topReply.text.includes(LONG_DEAL.title), '/top must not carry the full 5000-char title');
-  assert.ok(topReply.text.includes('(90% off)'), '/top price part must survive intact');
+  assert.ok(topReply.text.includes('90% OFF'), '/top badge must survive intact');
 });
 
 test('design consistency: empty states reply the noDealsLine() one-liner exactly once', async () => {
@@ -471,7 +526,7 @@ test('design consistency: empty states reply the noDealsLine() one-liner exactly
 test('design consistency: only pinned emoji appear in bot messages', async () => {
   // MERGE-GATED: old messages carry 💎 (digest), 🏆 (/top), 🏬 (/stores),
   // 👋/🆓 (/start), 📋 (/status), 📊 (/subscribers) — none in the pinned set.
-  const digestText = formatDigest(FEEDS, { minDiscount: 50, date: FIXED_DATE }).join('\n');
+  const digestText = formatDigest(FEEDS, { minDiscount: 50, date: FIXED_DATE }).map((m) => m.text).join('\n');
   assertOnlyPinnedEmoji(digestText, 'digest');
 
   const { bot } = await setupBot(async () => FEEDS);

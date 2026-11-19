@@ -71,7 +71,7 @@ test('selectDeals mirrors formatDigest: min filter, disc-then-savings sort, top-
   assert.deepEqual(picked['Amazon Now'].map(d => d.disc), [95, 90, 80, 70, 60]);
   assert.deepEqual(picked.Blinkit.map(d => d.title), ['Good 60', 'Edge 50']);
   // And the formatted digest shows exactly the same deals.
-  const text = formatDigest(deals, { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }).join('\n');
+  const text = formatDigest(deals, { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }).map((m) => m.text).join('\n');
   for (const d of [95, 90, 80, 70, 60]) assert.ok(text.includes('Deal ' + d), 'missing ' + d);
   assert.ok(!text.includes('Deal 55') && !text.includes('Deal 51'), 'cut deal leaked into digest');
   assert.ok(!text.includes('Bad 49'), 'below-min deal leaked into digest');
@@ -86,7 +86,7 @@ test('selectDeals: sort ties on disc break by savings (mrp - price) desc', () =>
   };
   const picked = selectDeals(deals, { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 });
   assert.deepEqual(picked.Zepto.map(d => d.title), ['Big saving', 'Small saving']);
-  const text = formatDigest(deals, { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }).join('\n');
+  const text = formatDigest(deals, { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }).map((m) => m.text).join('\n');
   assert.ok(text.indexOf('Big saving') < text.indexOf('Small saving'), 'digest order differs from selectDeals');
 });
 

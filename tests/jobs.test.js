@@ -15,7 +15,7 @@ const { initDb } = require('../src/db');
 const { dealKey, DEDUPE_WINDOW_MS } = require('../src/dedupe');
 const { loadFixture, STORE_ORDER } = require('../src/feed');
 const { formatDigest } = require('../src/digest');
-const { dealLine, watchAlert } = require('../src/design');
+const { dealCard, watchAlert } = require('../src/design');
 
 const CFG = {
   minDiscount: 50, digestTopPerStore: 5, digestHourIst: 9,
@@ -418,12 +418,18 @@ test('watch alerts: keyword match (case-insensitive title) sends exactly one ale
   assert.equal(res.alertsSent, 3, 'user 1: 1 (ghee); user 2: 2 (both oil deals)');
   const a1 = alertsTo(bot, 1);
   assert.equal(a1.length, 1);
-  // New design-system format: alert line + shared dealLine + footer.
+  // Rich alert format: alert line + shared dealCard + footer, plus its
+  // Grab Deal button on reply_markup.
   assert.equal(a1[0].text, watchAlert('ghee', MULTI_FEED.Zepto[0], 'Zepto'));
-  assert.ok(a1[0].text.includes(dealLine(MULTI_FEED.Zepto[0], 'Zepto')), 'alert carries the shared deal line');
+  assert.ok(a1[0].text.includes(dealCard(MULTI_FEED.Zepto[0], 'Zepto')), 'alert carries the shared deal card');
   assert.ok(a1[0].text.endsWith('\n—\nPriceDrop Hunter · /start · /stores · /stop'), 'alert ends with the shared footer');
   assert.equal(a1[0].opts.parse_mode, 'HTML');
   assert.equal(a1[0].opts.disable_web_page_preview, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(a1[0].opts.reply_markup.inline_keyboard)).flat(),
+    [{ text: '🛒 Grab Deal', url: MULTI_FEED.Zepto[0].url }],
+    'alert must attach the deal\'s Grab Deal button'
+  );
   const a2 = alertsTo(bot, 2);
   assert.equal(a2.length, 2, 'one alert per matching deal, not one per user');
   assert.ok(a2.every(a => a.text.includes('Oil 1L')));

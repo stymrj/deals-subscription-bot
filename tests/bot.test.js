@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { initDb } = require('../src/db');
 const { createBot, nextDigestLabel } = require('../src/bot');
 const { STORE_ORDER } = require('../src/feed');
-const { storeLabel, noDealsLine, header, footer, cadenceLine, dealLine, escapeHtml } = require('../src/design');
+const { storeLabel, noDealsLine, header, footer, cadenceLine, dealLine, dealCard, escapeHtml } = require('../src/design');
 
 const ADMIN_ID = 999;
 const USER_ID = 111;
@@ -394,7 +394,9 @@ test('cadence copy: welcome/help/subscribe/status say every 15 minutes, no 9 AM 
 
   telegram.calls.length = 0;
   await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
-  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('🎉'));
+  // The welcome also carries a 🎉 now, so target the confirmation by its
+  // header text, not by the first 🎉 message.
+  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('Subscribed'));
   assert.ok(reply, 'expected a subscribe confirmation');
   assert.match(reply.text, /every 15 minutes/i, 'subscribe reply must state the 15-minute cadence');
   assert.ok(!stale.test(reply.text), 'subscribe reply has stale daily copy: ' + reply.text);
@@ -639,7 +641,13 @@ test('/top returns the single best deal (highest disc) and writes no dedupe stat
   assert.ok(replies[0].text.includes('<b>₹1,500</b>'), '/top deal price must be bold: ' + replies[0].text);
   assert.ok(replies[0].text.includes('🚀 Zepto'), '/top deal must carry the store label: ' + replies[0].text);
   assert.ok(replies[0].text.includes('Mixer Grinder'), 'best deal is the 70% Zepto one');
-  assert.ok(replies[0].text.includes('70% off'));
+  assert.ok(replies[0].text.includes('🎯 70% OFF'));
+  assert.ok(replies[0].text.includes('💸 save ₹3,500'), '/top card must show the rupee saving');
+  assert.ok(replies[0].reply_markup, '/top must attach its Grab Deal button');
+  assert.ok(
+    JSON.stringify(replies[0].reply_markup).includes('https://example.com/mixer'),
+    '/top Grab Deal button must link the deal URL'
+  );
   assert.ok(!replies[0].text.includes('Headphones Pro'), 'only the single best deal, not the rest');
   assert.equal((await store.getRecentPostedKeys(0)).size, 0, '/top must not mark deals posted');
 });
@@ -664,6 +672,109 @@ test('/top tie-breaks equal discounts by biggest saving; empty feeds get the one
   const replies = userMessages(empty.telegram, USER_ID);
   assert.equal(replies.length, 1, 'empty /top must produce exactly one reply');
   assert.equal(replies[0].text, NO_DEALS_LINE);
+});
+
+test('/hot returns the biggest rupee saving (not the steepest discount); empty feeds get the one-liner', async () => {
+  const deals = {
+    'Amazon Now': [
+      { title: 'Steep But Cheap', price: 100, mrp: 1000, disc: 90, url: 'https://example.com/steep', cat: '' },
+    ],
+    Zepto: [
+      { title: 'Big Ticket Saver', price: 1500, mrp: 5000, disc: 70, url: 'https://example.com/mixer', cat: '' },
+    ],
+  };
+  const { store, bot, telegram } = await setup(async () => deals);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/hot'));
+  const replies = userMessages(telegram, USER_ID);
+  assert.equal(replies.length, 1, '/hot must send exactly one message');
+  assert.ok(replies[0].text.includes('<b>🛒 PriceDrop Hunter — Hottest deal 🔥</b>'), 'hot must use the design header: ' + replies[0].text);
+  assert.ok(replies[0].text.includes('Big Ticket Saver'), '/hot must pick the ₹3,500 saving over the 90% ₹900 saving');
+  assert.ok(!replies[0].text.includes('Steep But Cheap'), '/hot must not pick the steepest discount');
+  assert.ok(replies[0].text.includes('💸 save ₹3,500'));
+  assert.ok(replies[0].text.includes('PriceDrop Hunter · /start · /stores · /stop'), '/hot must end with the footer');
+  assert.ok(replies[0].reply_markup, '/hot must attach its Grab Deal button');
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0, '/hot must not mark deals posted');
+
+  const empty = await setup(async () => ({}));
+  await empty.bot.handleUpdate(messageUpdate(USER_ID, '/hot'));
+  const emptyReplies = userMessages(empty.telegram, USER_ID);
+  assert.equal(emptyReplies.length, 1, 'empty /hot must produce exactly one reply');
+  assert.equal(emptyReplies[0].text, NO_DEALS_LINE);
+});
+
+test('/start keyboard has a Hottest deal button; the hot callback behaves like /hot', async () => {
+  const { bot, telegram } = await setup(async () => STUB_DEALS);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
+  const startReply = lastUserMessage(telegram, USER_ID);
+  const startButtons = JSON.parse(JSON.stringify(startReply.reply_markup.inline_keyboard)).flat();
+  assert.ok(startButtons.some((b) => b.callback_data === 'hot'), 'start keyboard must offer the hot button: ' + JSON.stringify(startButtons));
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'hot'));
+  const reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('Mixer Grinder'), 'hot callback must reply with the biggest saving (Mixer ₹3,500 vs Headphones ₹2,000): ' + reply.text);
+  assert.ok(reply.text.includes('💸 save ₹'));
+});
+
+test('/search finds by keyword, caps at 5, usage without keyword, no-results suggests /watch', async () => {
+  const deals = {
+    'Amazon Now': [
+      { title: 'Headphones Pro X', price: 999, mrp: 2999, disc: 66, url: 'https://example.com/hp', cat: 'Electronics' },
+      { title: 'Headphones Lite', price: 499, mrp: 999, disc: 50, url: 'https://example.com/hl', cat: 'Electronics' },
+    ],
+    Zepto: [
+      { title: 'Mixer Grinder', price: 1500, mrp: 5000, disc: 70, url: 'https://example.com/mixer', cat: 'Kitchen' },
+    ],
+  };
+  const { store, bot, telegram } = await setup(async () => deals);
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/search'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /Usage: \/search <keyword>/);
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/search HEADPHONES'));
+  let reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('Headphones Pro X') && reply.text.includes('Headphones Lite'), 'case-insensitive search must match both: ' + reply.text);
+  assert.ok(!reply.text.includes('Mixer Grinder'), 'search must not show non-matching deals');
+  assert.ok(reply.text.includes('🎯 66% OFF'), 'search results must carry the discount badge');
+  assert.ok(reply.text.includes('💸 save ₹2,000'), 'search results must show the rupee saving');
+  assert.ok(reply.reply_markup, 'search must attach Grab Deal buttons');
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0, '/search must not mark deals posted');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/search fridge'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('No deals found'), 'no-results reply: ' + reply.text);
+  assert.ok(reply.text.includes('/watch fridge'), 'no-results reply must suggest watching the keyword');
+});
+
+test('/deals attaches store-filter buttons; tapping one re-runs /deals for that store only', async () => {
+  const { bot, telegram } = await setup(async () => STUB_DEALS);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/deals'));
+  const dealsReply = lastUserMessage(telegram, USER_ID);
+  assert.ok(dealsReply.reply_markup, '/deals must attach a keyboard (Grab Deal + store filters)');
+  const buttons = JSON.parse(JSON.stringify(dealsReply.reply_markup.inline_keyboard)).flat();
+  assert.ok(buttons.some((b) => b.callback_data === 'deals:filter:all'), 'All stores button missing: ' + JSON.stringify(buttons));
+  assert.ok(buttons.some((b) => b.callback_data === 'deals:filter:0'), 'Amazon Now filter button missing');
+  assert.ok(buttons.some((b) => b.callback_data === 'deals:filter:6'), 'Zepto filter button missing');
+  assert.ok(buttons.some((b) => b.text === '🛒 Grab Deal' && b.url === 'https://example.com/hp'), 'Grab Deal button missing from /deals');
+
+  // Filter to Amazon Now (index 0): only its deals, no Zepto mixer.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'deals:filter:0'));
+  let reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('Headphones Pro'), 'filtered reply must show the Amazon deal: ' + reply.text);
+  assert.ok(!reply.text.includes('Mixer Grinder'), 'filtered reply must not show other stores');
+
+  // Filter to Croma (index 5, no deals in the stub): the one-liner.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'deals:filter:5'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.equal(reply.text, NO_DEALS_LINE);
+
+  // All stores again: both stores back.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'deals:filter:all'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('Headphones Pro') && reply.text.includes('Mixer Grinder'), 'All stores must restore every deal');
 });
 
 test('/watch add/duplicate/limit/too-long/empty; /unwatch present + absent; /watchlist empty + populated', async () => {
@@ -730,7 +841,7 @@ test('/watch add/duplicate/limit/too-long/empty; /unwatch present + absent; /wat
 });
 
 test('/start and /help both list all 9 stores and all new commands', async () => {
-  const newCommands = ['/stores', '/setdiscount', '/deals', '/top', '/watch', '/unwatch', '/watchlist'];
+  const newCommands = ['/stores', '/setdiscount', '/deals', '/hot', '/search', '/top', '/watch', '/unwatch', '/watchlist'];
   const { bot, telegram } = await setup();
   await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
   let reply = telegram.calls.find((c) => c.method === 'sendMessage');
@@ -768,7 +879,7 @@ test('design.js: header/footer/cadence/storeLabel/escape/inr follow the pin exac
   assert.equal(footer(), '\n—\n' + FOOTER_TAIL);
   assert.equal(
     cadenceLine(50),
-    'Fresh deals every 15 minutes · 50%+ off · duplicates removed'
+    '⚡ Fresh deals every 15 minutes · 50%+ off · duplicates removed'
   );
   assert.equal(storeLabel('Amazon Now'), '🛒 Amazon Now');
   assert.equal(storeLabel('Zepto'), '🚀 Zepto');
@@ -795,7 +906,7 @@ test('design.js: dealLine renders bold price + store label, no link when url is 
   assert.ok(long.includes('<b>₹999</b>'), 'truncation must keep the price part intact');
   const alert = require('../src/design').watchAlert('headphones', deal, 'Amazon Now');
   assert.ok(alert.startsWith('🔔 <b>Watch alert: "headphones"</b>\n'), 'watch alert lead line: ' + alert);
-  assert.ok(alert.includes(dealLine(deal, 'Amazon Now')), 'watch alert must embed the deal line');
+  assert.ok(alert.includes(dealCard(deal, 'Amazon Now')), 'watch alert must embed the deal card');
   assert.ok(alert.endsWith(footer()), 'watch alert must end with the footer');
 });
 
@@ -827,7 +938,9 @@ test('design formats: welcome/help/status/subscribe/stores use header + footer +
   assert.equal(reply.parse_mode, 'HTML');
 
   await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
-  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('🎉'));
+  // The welcome also carries a 🎉 now, so target the confirmation by its
+  // header text, not by the first 🎉 message.
+  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('Subscribed'));
   assert.ok(reply, 'expected a subscribe confirmation');
   assert.ok(reply.text.includes('🎉 <b>🛒 PriceDrop Hunter — Subscribed</b>'), 'subscribe confirmation: 🎉 + header');
   assert.ok(reply.text.includes('<b>Next digest:</b>'), 'subscribe confirmation: next digest');

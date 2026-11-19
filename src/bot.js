@@ -8,7 +8,8 @@ const {
   footer,
   cadenceLine,
   storeLabel,
-  dealLine,
+  dealCard,
+  dealButtons,
   noDealsLine,
   escapeHtml,
   MAX_LEN,
@@ -60,16 +61,20 @@ function storeListText() {
 function commandsText() {
   return (
     `Stores we track:\n${storeListText()}\n\n` +
-    `Commands:\n` +
+    `🔥 Deals — right now:\n` +
+    `/deals — matching deals right now, on demand\n` +
+    `/hot — biggest saving right now\n` +
+    `/top — steepest discount right now\n` +
+    `/search <keyword> — find deals by name\n\n` +
+    `⚙️ Your digest:\n` +
     `/start — subscribe for free, or check status\n` +
     `/status — your subscription status and next digest time\n` +
     `/stores — pick which stores your digest covers\n` +
-    `/setdiscount <10-90> — only show deals at that discount or more\n` +
-    `/deals — matching deals right now, on demand\n` +
-    `/top — the single best deal right now\n` +
+    `/setdiscount <10-90> — only show deals at that discount or more\n\n` +
+    `🔔 Watchlist:\n` +
     `/watch <keyword> — alert me when a matching deal appears\n` +
     `/unwatch <keyword> — stop watching a keyword\n` +
-    `/watchlist — your watched keywords\n` +
+    `/watchlist — your watched keywords\n\n` +
     `/myid — your numeric Telegram id\n` +
     `/stop — stop the deal updates\n` +
     `/help — this help\n\n` +
@@ -123,14 +128,16 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
 
   const welcomeText = () =>
     `${header('Welcome')}\n\n` +
-    `Free subscription — no payment needed.\n` +
+    `🎉 Free subscription — no payment needed. 9 stores, fresh deals every 15 minutes, 50%+ off only.\n` +
+    `🔥 Hottest deals land here first — tap Subscribe and you're in.\n\n` +
     `${cadenceLine(50)}\n\n` +
     `${commandsText()}\n\n` +
     `Tap below to get started:${footer()}`;
 
   const startKeyboard = () =>
     Markup.inlineKeyboard([
-      [Markup.button.callback('Subscribe — free', 'subscribe')],
+      [Markup.button.callback('🎉 Subscribe — free', 'subscribe')],
+      [Markup.button.callback('🔥 Hottest deal now', 'hot')],
       [Markup.button.callback('My status', 'status')],
     ]);
 
@@ -174,12 +181,12 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     return (
       `${header('Your subscription')}\n\n` +
       `Free subscriber\n` +
-      `<b>Status:</b> ${statusLabel}\n` +
-      `<b>Min. discount:</b> ${min}%\n` +
-      `<b>Stores:</b> ${enabledCount} of ${STORE_ORDER.length} enabled\n` +
-      `<b>Watchlist:</b> ${watchCount} keyword(s)\n` +
+      `<b>Status:</b> ${statusLabel}${subscribed ? ' ✅' : ' ❌'}\n` +
+      `🎯 <b>Min. discount:</b> ${min}%\n` +
+      `🏪 <b>Stores:</b> ${enabledCount} of ${STORE_ORDER.length} enabled\n` +
+      `🔔 <b>Watchlist:</b> ${watchCount} keyword(s)\n` +
       `${cadenceLine(min)}\n` +
-      `<b>Next digest:</b> ${nextDigestLabel(Date.now(), config.digestHourIst)}` +
+      `📅 <b>Next digest:</b> ${nextDigestLabel(Date.now(), config.digestHourIst)}` +
       (subscribed
         ? footer()
         : `\n\nTap /start and hit Subscribe to join — it's free.${footer()}`)
@@ -214,7 +221,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     return Markup.inlineKeyboard(rows);
   }
 
-  // ---------- /deals + /top helper ----------
+  // ---------- /deals + /top + /hot + /search helpers ----------
 
   // Fetch the feeds and select the deals matching this user's stores and
   // discount threshold. Reads dedupe state NEVER and writes it NEVER:
@@ -225,6 +232,78 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     const deals = await fetchDealsFn();
     const selected = selectUserDeals(deals, prefs, config);
     return { prefs, selected };
+  }
+
+  // Best deal in a selection: highest discount, ties broken by biggest
+  // rupee saving (same rule as formatDigest's per-store sort).
+  function bestDealByDisc(selected) {
+    let best = null;
+    let bestStore = null;
+    for (const [storeName, list] of Object.entries(selected)) {
+      for (const deal of list) {
+        const saving = deal.mrp - deal.price;
+        const bestSaving = best ? best.mrp - best.price : -Infinity;
+        if (!best || deal.disc > best.disc || (deal.disc === best.disc && saving > bestSaving)) {
+          best = deal;
+          bestStore = storeName;
+        }
+      }
+    }
+    return best ? { deal: best, store: bestStore } : null;
+  }
+
+  // Hottest deal: biggest rupee saving (different pick from /top, which
+  // is the steepest discount). Ties broken by higher discount.
+  function bestDealBySaving(selected) {
+    let best = null;
+    let bestStore = null;
+    for (const [storeName, list] of Object.entries(selected)) {
+      for (const deal of list) {
+        const saving = deal.mrp - deal.price;
+        const bestSaving = best ? best.mrp - best.price : -Infinity;
+        if (!best || saving > bestSaving || (saving === bestSaving && deal.disc > best.disc)) {
+          best = deal;
+          bestStore = storeName;
+        }
+      }
+    }
+    return best ? { deal: best, store: bestStore } : null;
+  }
+
+  // Send one formatDigest message object: text + its Grab Deal buttons.
+  async function sendRichMessage(ctx, msg, extraRows) {
+    const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+    const rows = (msg.buttons || []).map((b) => [{ text: b.text, url: b.url }]);
+    if (extraRows && extraRows.length) rows.push(...extraRows);
+    if (rows.length) extra.reply_markup = { inline_keyboard: rows };
+    await ctx.reply(msg.text, extra);
+  }
+
+  // Store quick-filter buttons for /deals: one per store + All stores.
+  // Callback data carries the store INDEX, never the name.
+  function dealsFilterKeyboard() {
+    const rows = [];
+    for (let i = 0; i < STORE_ORDER.length; i += 2) {
+      const row = [];
+      for (let j = i; j < Math.min(i + 2, STORE_ORDER.length); j++) {
+        row.push(Markup.button.callback(storeLabel(STORE_ORDER[j]), `deals:filter:${j}`));
+      }
+      rows.push(row);
+    }
+    rows.push([Markup.button.callback('🔄 All stores', 'deals:filter:all')]);
+    return rows;
+  }
+
+  // Reply with one single-deal card (header + dealCard + footer) and its
+  // Grab Deal button. Budget the card so header + footer fit in MAX_LEN.
+  async function sendSingleDeal(ctx, headTitle, found) {
+    const head = header(headTitle);
+    const foot = footer();
+    const card = dealCard(found.deal, found.store, MAX_LEN - head.length - 2 - foot.length);
+    const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+    const buttons = dealButtons(found.deal);
+    if (buttons.length) extra.reply_markup = { inline_keyboard: buttons.map((b) => [{ text: b.text, url: b.url }]) };
+    await ctx.reply(`${head}\n\n${card}${foot}`, extra);
   }
 
   // ---------- Watch helpers ----------
@@ -313,39 +392,69 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
       await ctx.reply(NO_DEALS_LINE);
       return;
     }
-    for (const msg of messages) {
-      await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
+    const filterRows = dealsFilterKeyboard();
+    for (let i = 0; i < messages.length; i++) {
+      // Store quick-filter buttons ride on the last message only.
+      await sendRichMessage(ctx, messages[i], i === messages.length - 1 ? filterRows : null);
     }
   });
 
   bot.command('top', async (ctx) => {
     const { selected } = await fetchSelectedForUser(ctx);
-    let best = null;
-    let bestStore = null;
-    for (const [storeName, list] of Object.entries(selected)) {
-      for (const deal of list) {
-        const saving = deal.mrp - deal.price;
-        const bestSaving = best ? best.mrp - best.price : -Infinity;
-        if (!best || deal.disc > best.disc || (deal.disc === best.disc && saving > bestSaving)) {
-          best = deal;
-          bestStore = storeName;
-        }
-      }
-    }
-    if (!best) {
+    const found = bestDealByDisc(selected);
+    if (!found) {
       await ctx.reply(NO_DEALS_LINE);
       return;
     }
-    // Budget the deal line so header + line + footer stay within MAX_LEN:
-    // dealLine truncates to its maxLen, so pass it only what's left after
-    // the header, the newline, and the footer.
-    const topHead = header('Top deal');
-    const topFoot = footer();
-    const line = dealLine(best, bestStore, MAX_LEN - topHead.length - 1 - topFoot.length);
-    await ctx.reply(
-      `${topHead}\n${line}${topFoot}`,
-      { parse_mode: 'HTML', disable_web_page_preview: true }
-    );
+    await sendSingleDeal(ctx, 'Top deal', found);
+  });
+
+  bot.command('hot', async (ctx) => {
+    const { selected } = await fetchSelectedForUser(ctx);
+    const found = bestDealBySaving(selected);
+    if (!found) {
+      await ctx.reply(NO_DEALS_LINE);
+      return;
+    }
+    await sendSingleDeal(ctx, 'Hottest deal 🔥', found);
+  });
+
+  bot.command('search', async (ctx) => {
+    const q = keywordArg(ctx, 'search');
+    if (!q) {
+      await ctx.reply('Usage: /search <keyword> — e.g. /search headphones');
+      return;
+    }
+    const { selected } = await fetchSelectedForUser(ctx);
+    const needle = q.toLowerCase();
+    const hits = [];
+    for (const [store, list] of Object.entries(selected)) {
+      for (const deal of list) {
+        if (String(deal.title || '').toLowerCase().includes(needle)) hits.push({ deal, store });
+      }
+    }
+    hits.sort((a, b) => b.deal.disc - a.deal.disc || (b.deal.mrp - b.deal.price) - (a.deal.mrp - a.deal.price));
+    const top = hits.slice(0, 5);
+    if (!top.length) {
+      await ctx.reply(`🔍 No deals found for "${escapeHtml(q)}" — try another word, or /watch ${escapeHtml(q)} to get alerted when one appears.`);
+      return;
+    }
+    const head = header(`Search: "${escapeHtml(q)}"`);
+    const foot = footer();
+    const intro = `🔍 Found ${top.length} deal${top.length === 1 ? '' : 's'} for "${escapeHtml(q)}"`;
+    // Add cards one at a time so the whole reply stays inside MAX_LEN.
+    const cards = [];
+    let used = head.length + 1 + intro.length + 2 + foot.length;
+    for (const { deal, store } of top) {
+      const card = dealCard(deal, store, MAX_LEN - used - 2);
+      if (used + card.length + 2 > MAX_LEN && cards.length) break;
+      cards.push(card);
+      used += card.length + 2;
+    }
+    const buttons = top.slice(0, cards.length).flatMap(({ deal }) => dealButtons(deal)).slice(0, 5);
+    const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+    if (buttons.length) extra.reply_markup = { inline_keyboard: buttons.map((b) => [{ text: b.text, url: b.url }]) };
+    await ctx.reply(`${head}\n${intro}\n\n${cards.join('\n\n')}${foot}`, extra);
   });
 
   bot.command('watch', async (ctx) => {
@@ -447,7 +556,8 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     const min = Number.isInteger(prefs.min_discount) ? prefs.min_discount : 50;
     await ctx.reply(
       `🎉 ${header('Subscribed')}\n\n` +
-        `You're subscribed — for free!\n` +
+        `✅ You're subscribed — for free, forever.\n` +
+        `🔥 Hottest deals land here first.\n` +
         `${cadenceLine(min)}\n` +
         `<b>Next digest:</b> ${nextDigestLabel(Date.now(), config.digestHourIst)}${footer()}`,
       { ...startKeyboard(), parse_mode: 'HTML' }
@@ -458,6 +568,47 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     await ctx.answerCbQuery();
     const sub = await ensureSubscriber(ctx);
     await ctx.reply(statusText(sub, await loadStatusExtra(ctx.from.id)), { ...startKeyboard(), parse_mode: 'HTML' });
+  });
+
+  // "Hottest deal now" button on /start — same as /hot.
+  bot.action('hot', async (ctx) => {
+    await ctx.answerCbQuery();
+    const { selected } = await fetchSelectedForUser(ctx);
+    const found = bestDealBySaving(selected);
+    if (!found) {
+      await ctx.reply(NO_DEALS_LINE);
+      return;
+    }
+    await sendSingleDeal(ctx, 'Hottest deal 🔥', found);
+  });
+
+  // Store quick-filter buttons on /deals: re-run /deals for one store
+  // (or all stores). Callback data carries the store INDEX, never the name.
+  bot.action(/^deals:filter:(all|\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const { prefs, selected } = await fetchSelectedForUser(ctx);
+    const arg = ctx.match[1];
+    let subset = selected;
+    if (arg !== 'all') {
+      const store = STORE_ORDER[Number(arg)];
+      if (!store || !selected[store] || !selected[store].length) {
+        await ctx.reply(NO_DEALS_LINE);
+        return;
+      }
+      subset = { [store]: selected[store] };
+    }
+    const messages = formatDigest(subset, {
+      minDiscount: prefs.min_discount,
+      topPerStore: config.digestTopPerStore ?? config.topPerStore ?? 5,
+    });
+    if (messages.length === 0) {
+      await ctx.reply(NO_DEALS_LINE);
+      return;
+    }
+    const filterRows = dealsFilterKeyboard();
+    for (let i = 0; i < messages.length; i++) {
+      await sendRichMessage(ctx, messages[i], i === messages.length - 1 ? filterRows : null);
+    }
   });
 
   // Callback data: `store:toggle:<index>` — index into STORE_ORDER.

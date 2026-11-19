@@ -20,7 +20,7 @@ function deal(title, disc, price = 100, mrp = 200) {
 test('top-5 cap: only the 5 highest-discount deals per store appear', () => {
   const deals = { 'Amazon Now': [95, 90, 80, 70, 60, 55, 51].map(d => deal('Deal ' + d, d)) };
   const msgs = formatDigest(deals, CFG);
-  const text = msgs.join('\n');
+  const text = msgs.map((m) => m.text).join('\n');
   for (const d of [95, 90, 80, 70, 60]) assert.ok(text.includes('Deal ' + d), 'missing ' + d);
   assert.ok(!text.includes('Deal 55'), '6th deal leaked through');
   assert.ok(!text.includes('Deal 51'), '7th deal leaked through');
@@ -28,7 +28,7 @@ test('top-5 cap: only the 5 highest-discount deals per store appear', () => {
 
 test('min-discount filter: deals below MIN_DISCOUNT are dropped', () => {
   const deals = { Blinkit: [deal('Good 60', 60), deal('Bad 49', 49), deal('Bad 48', 48), deal('Edge 50', 50)] };
-  const text = formatDigest(deals, CFG).join('\n');
+  const text = formatDigest(deals, CFG).map((m) => m.text).join('\n');
   assert.ok(text.includes('Good 60') && text.includes('Edge 50'));
   assert.ok(!text.includes('Bad 49') && !text.includes('Bad 48'));
 });
@@ -36,7 +36,7 @@ test('min-discount filter: deals below MIN_DISCOUNT are dropped', () => {
 test('empty stores are omitted entirely: no heading, no "no deals" line', () => {
   const deals = { Croma: [], Blinkit: [deal('Low', 10)], 'Amazon Now': [deal('Good 60', 60)] };
   const msgs = formatDigest(deals, CFG);
-  const text = msgs.join('\n');
+  const text = msgs.map((m) => m.text).join('\n');
   assert.ok(!text.includes('Croma'), 'empty store must not appear: ' + text.slice(0, 300));
   assert.ok(!text.includes('Blinkit'), 'all-below-min store must not appear');
   assert.ok(!text.includes('no deals above'), 'no "no deals" line may appear at 15-minute cadence');
@@ -59,7 +59,7 @@ test('istDateTimeLabel: IST date and time, e.g. Thu, 19 Nov 2026 · 6:15 PM IST'
 
 test('HTML escaping: titles cannot break out of the markup', () => {
   const deals = { Zepto: [deal('<script>alert("x")</script> & Sons', 80)] };
-  const text = formatDigest(deals, CFG).join('\n');
+  const text = formatDigest(deals, CFG).map((m) => m.text).join('\n');
   assert.ok(!text.includes('<script>'), 'raw script tag leaked');
   assert.ok(text.includes('&lt;script&gt;'), 'escaped tag missing');
   assert.ok(text.includes('&amp;'), 'ampersand not escaped');
@@ -67,7 +67,7 @@ test('HTML escaping: titles cannot break out of the markup', () => {
 });
 
 test('header carries the IST date and time plus the terms (50%+, 15 min, deduped)', () => {
-  const text = formatDigest({ 'Amazon Now': [deal('X', 60)] }, CFG).join('\n');
+  const text = formatDigest({ 'Amazon Now': [deal('X', 60)] }, CFG).map((m) => m.text).join('\n');
   assert.ok(text.includes('<b>🛒 PriceDrop Hunter — Fresh Deals</b>'), 'brand header missing: ' + text.slice(0, 200));
   assert.ok(text.includes('📅 Tue, 10 Nov 2026'), 'date line missing: ' + text.slice(0, 200));
   assert.ok(text.includes('Tue, 10 Nov 2026'), 'IST date missing: ' + text.slice(0, 200));
@@ -89,28 +89,50 @@ test('header carries the IST date and time plus the terms (50%+, 15 min, deduped
   assert.ok(!/₹49/.test(text), 'no price may appear in the header');
 });
 
-test('deal renders as one block: linked name, price, struck-through MRP, discount %, store', () => {
-  const text = formatDigest({ 'Amazon Now': [deal('Oil 1L', 60, 100, 250)] }, CFG).join('\n');
+test('deal renders as one rich card: badge, linked name, price, struck-through MRP, savings, category', () => {
+  const text = formatDigest({ 'Amazon Now': [deal('Oil 1L', 60, 100, 250)] }, CFG).map((m) => m.text).join('\n');
   assert.ok(text.includes('<b>🛒 Amazon Now</b>'), 'bold emoji store heading missing');
   assert.ok(text.includes('<a href="https://example.com/Oil%201L">Oil 1L</a>'), 'linked deal name missing: ' + text);
   assert.ok(text.includes('<b>₹100</b>'), 'bold sell price missing');
   assert.ok(text.includes('<s>₹250</s>'), 'struck-through MRP missing');
-  assert.ok(text.includes('(60% off)'), 'discount % missing');
-  // The deal is one indivisible line: exactly one '• ' line, holding everything.
-  const lines = text.split('\n').filter(l => l.startsWith('• '));
-  assert.equal(lines.length, 1, 'expected exactly one deal line, got ' + lines.length);
-  assert.ok(/\(60% off\) — 🛒 Amazon Now$/.test(lines[0]), 'deal line must end with the emoji store label: ' + lines[0]);
+  assert.ok(text.includes('🎯 60% OFF'), 'discount badge missing');
+  assert.ok(text.includes('💸 save ₹150'), 'rupee saving missing');
+  assert.ok(text.includes('🏷️ Test'), 'category tag missing');
+  // The deal is one indivisible card: exactly one badge line, holding everything.
+  const badges = text.split('\n').filter(l => /% OFF · /.test(l));
+  assert.equal(badges.length, 1, 'expected exactly one deal card, got ' + badges.length);
+  assert.ok(/🎯 60% OFF · 🛒 Amazon Now$/.test(badges[0]), 'badge line must end with the emoji store label: ' + badges[0]);
 });
 
-test('deal without a URL still renders (plain name, no empty link)', () => {
+test('deal without a URL still renders (plain name, no empty link, no button)', () => {
   const msgs = formatDigest({ 'Amazon Now': [{ title: 'No Link Deal', price: 100, mrp: 200, disc: 70, url: '', cat: 'Test' }] }, CFG);
-  const text = msgs.join('\n');
+  const text = msgs.map((m) => m.text).join('\n');
   assert.ok(text.includes('No Link Deal'));
   assert.ok(!text.includes('<a href'), 'no link must be emitted when there is no URL');
   assert.ok(text.includes('<s>₹200</s>'));
+  assert.deepEqual(msgs[0].buttons, [], 'no URL means no Grab Deal button');
 });
 
-test('split: a long digest becomes <=2 messages of <=3900 chars, no deal cut mid-line', () => {
+test('every deal gets one Grab Deal button, capped at 8 per message', () => {
+  const stores = {};
+  for (const s of ['Amazon Now', 'Blinkit', 'Flipkart Minutes', 'BigBasket', 'Myntra', 'Croma', 'Zepto', 'Swiggy Instamart', 'JioMart']) {
+    stores[s] = Array.from({ length: 5 }, (_, i) =>
+      ({ title: `${s} Product ${i}`, price: 100, mrp: 200, disc: 90 - i, url: 'https://example.com/' + s.replace(/ /g, '') + i, cat: 'Test' }));
+  }
+  const msgs = formatDigest(stores, CFG);
+  assert.ok(msgs.length >= 1);
+  for (const m of msgs) {
+    assert.ok(m.buttons.length <= 8, `message carries ${m.buttons.length} buttons, over the cap`);
+    for (const b of m.buttons) {
+      assert.equal(b.text, '🛒 Grab Deal', 'button label must be the pinned Grab Deal text');
+      assert.ok(b.url.startsWith('https://example.com/'), 'button must carry the deal URL');
+    }
+  }
+  const totalButtons = msgs.reduce((n, m) => n + m.buttons.length, 0);
+  assert.ok(totalButtons >= 8, `expected buttons on the digest, got ${totalButtons}`);
+});
+
+test('split: a long digest becomes <=2 messages of <=3900 chars, no card cut mid-card', () => {
   const stores = {};
   for (const s of ['Amazon Now', 'Blinkit', 'Flipkart Minutes', 'BigBasket', 'Myntra', 'Croma', 'Zepto', 'Swiggy Instamart', 'JioMart']) {
     stores[s] = Array.from({ length: 5 }, (_, i) =>
@@ -118,12 +140,19 @@ test('split: a long digest becomes <=2 messages of <=3900 chars, no deal cut mid
   }
   const msgs = formatDigest(stores, CFG);
   assert.ok(msgs.length <= 2, `expected <=2 messages, got ${msgs.length}`);
-  for (const m of msgs) assert.ok(m.length <= 3900, `message ${m.length} chars exceeds 3900`);
-  // Every '• ' line is a complete deal: each must contain '% off) — ' and end
-  // with a store name; no line may be a fragment.
-  const allLines = msgs.join('\n').split('\n').filter(l => l.startsWith('• '));
-  assert.equal(allLines.length, 45, `expected 45 deal lines (9 stores x 5), got ${allLines.length}`);
-  for (const line of allLines) assert.ok(/\(\d+% off\) — /.test(line), 'cut deal line: ' + line.slice(0, 80));
+  for (const m of msgs) assert.ok(m.text.length <= 3900, `message ${m.text.length} chars exceeds 3900`);
+  // Every card is complete: each badge line is followed by its title and its
+  // price line, in that order; no card may be a fragment.
+  const allLines = msgs.map((m) => m.text).join('\n').split('\n');
+  const badges = allLines.filter(l => /% OFF · /.test(l));
+  assert.equal(badges.length, 45, `expected 45 deal cards (9 stores x 5), got ${badges.length}`);
+  for (const line of badges) assert.ok(/% OFF · /.test(line), 'cut card badge: ' + line.slice(0, 80));
+  for (let i = 0; i < allLines.length; i++) {
+    if (/% OFF · /.test(allLines[i])) {
+      assert.ok(allLines[i + 1] && allLines[i + 1].includes('Product'), 'title must follow the badge: ' + allLines.slice(i, i + 3).join(' | '));
+      assert.ok(allLines[i + 2] && allLines[i + 2].includes('💰'), 'price line must follow the title: ' + allLines.slice(i, i + 3).join(' | '));
+    }
+  }
 });
 
 test('split: an over-cap digest still ships <=2 messages, dropping whole trailing deals', () => {
@@ -134,23 +163,32 @@ test('split: an over-cap digest still ships <=2 messages, dropping whole trailin
   }
   const msgs = formatDigest(stores, CFG);
   assert.ok(msgs.length <= 2, `expected <=2 messages, got ${msgs.length}`);
-  for (const m of msgs) assert.ok(m.length <= 3900, `message ${m.length} chars exceeds 3900`);
-  const allLines = msgs.join('\n').split('\n').filter(l => l.startsWith('• '));
-  assert.ok(allLines.length > 0 && allLines.length < 40, `expected some deals dropped, got ${allLines.length} lines`);
-  for (const line of allLines) assert.ok(/\(\d+% off\) — /.test(line), 'cut deal line: ' + line.slice(0, 80));
+  for (const m of msgs) assert.ok(m.text.length <= 3900, `message ${m.text.length} chars exceeds 3900`);
+  const allLines = msgs.map((m) => m.text).join('\n').split('\n');
+  const badges = allLines.filter(l => /% OFF · /.test(l));
+  assert.ok(badges.length > 0 && badges.length < 45, `expected some deals dropped, got ${badges.length} cards`);
+  for (const line of badges) assert.ok(/% OFF · /.test(line), 'cut card badge: ' + line.slice(0, 80));
   // Dropped-deals note uses the 15-minute cadence, not "tomorrow's digest".
-  const text = msgs.join('\n');
+  const text = msgs.map((m) => m.text).join('\n');
   assert.ok(text.includes('in the next update'), 'reworded dropped-deals note missing: ' + text.slice(-200));
   assert.ok(!text.includes("tomorrow's digest"), 'old "tomorrow\'s digest" note must be gone');
 });
 
-test('splitMessages splits only between blocks', () => {
-  const blocks = ['HEADER', '• deal one', '• deal two', '• deal three'];
-  const msgs = splitMessages(blocks, 30, 2);
+test('splitMessages splits only between units and keeps their buttons', () => {
+  const units = [
+    { text: 'HEADER', isDeal: false, buttons: [] },
+    { text: 'deal one', isDeal: true, buttons: [{ text: '🛒 Grab Deal', url: 'https://example.com/1' }] },
+    { text: 'deal two', isDeal: true, buttons: [{ text: '🛒 Grab Deal', url: 'https://example.com/2' }] },
+    { text: 'deal three', isDeal: true, buttons: [{ text: '🛒 Grab Deal', url: 'https://example.com/3' }] },
+  ];
+  const msgs = splitMessages(units, 30, 2);
   assert.equal(msgs.length, 2, 'should split into 2 messages, got ' + JSON.stringify(msgs));
-  for (const m of msgs) assert.ok(m.length <= 30, 'message exceeds limit: ' + m);
-  assert.ok(msgs.join('\n').includes('• deal one'));
-  assert.ok(msgs.join('\n').includes('• deal three'));
+  for (const m of msgs) assert.ok(m.text.length <= 30, 'message exceeds limit: ' + m.text);
+  assert.ok(msgs.map((m) => m.text).join('\n').includes('deal one'));
+  assert.ok(msgs.map((m) => m.text).join('\n').includes('deal three'));
+  assert.deepEqual(msgs.flatMap((m) => m.buttons).map((b) => b.url), [
+    'https://example.com/1', 'https://example.com/2', 'https://example.com/3',
+  ]);
 });
 
 test('a single over-long deal gets its title shortened, not the message blown', () => {
@@ -159,8 +197,8 @@ test('a single over-long deal gets its title shortened, not the message blown', 
   // amount of title-shortening could fix that (not a realistic feed case).
   const msgs = formatDigest({ 'Amazon Now': [{ title: longTitle, price: 100, mrp: 200, disc: 90, url: 'https://example.com/x', cat: 'Test' }] }, CFG);
   assert.equal(msgs.length, 1);
-  assert.ok(msgs[0].length <= 3900, `single-deal message ${msgs[0].length} chars`);
-  assert.ok(msgs[0].includes('…'), 'no ellipsis shortening marker');
+  assert.ok(msgs[0].text.length <= 3900, `single-deal message ${msgs[0].text.length} chars`);
+  assert.ok(msgs[0].text.includes('…'), 'no ellipsis shortening marker');
 });
 
 test('fixture loads: 9 stores, Croma empty and omitted, one 95% deal', () => {
@@ -170,8 +208,8 @@ test('fixture loads: 9 stores, Croma empty and omitted, one 95% deal', () => {
   const all = Object.values(deals).flat();
   assert.ok(all.some(d => d.disc === 95), 'no 95% deal in fixture');
   assert.ok(all.length >= 30, `fixture too thin: ${all.length} deals`);
-  const text = formatDigest(deals, CFG).join('\n');
-  assert.ok(text.includes('95% off'));
+  const text = formatDigest(deals, CFG).map((m) => m.text).join('\n');
+  assert.ok(text.includes('95% OFF'));
   assert.ok(!text.includes('Croma'), 'empty Croma must be omitted from the digest');
   assert.ok(!text.includes('no deals above'), 'no "no deals" line may appear');
 });
@@ -214,8 +252,8 @@ test('design: header / footer / cadenceLine', () => {
   );
   assert.equal(design.header('Fresh Deals'), '<b>🛒 PriceDrop Hunter — Fresh Deals</b>');
   assert.equal(design.footer(), '\n—\nPriceDrop Hunter · /start · /stores · /stop');
-  assert.equal(design.cadenceLine(50), 'Fresh deals every 15 minutes · 50%+ off · duplicates removed');
-  assert.equal(design.cadenceLine(30), 'Fresh deals every 15 minutes · 30%+ off · duplicates removed');
+  assert.equal(design.cadenceLine(50), '⚡ Fresh deals every 15 minutes · 50%+ off · duplicates removed');
+  assert.equal(design.cadenceLine(30), '⚡ Fresh deals every 15 minutes · 30%+ off · duplicates removed');
   assert.equal(design.BRAND_NAME, 'PriceDrop Hunter');
   assert.equal(design.MAX_LEN, 3900);
 });
@@ -223,7 +261,7 @@ test('design: header / footer / cadenceLine', () => {
 test('design: noDealsLine matches the bot one-liner verbatim', () => {
   assert.equal(
     design.noDealsLine(),
-    'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.'
+    '🔍 No deals right now matching your stores & discount — fresh deals land every 15 minutes, so check back soon, or try /deals, /hot or /search.'
   );
 });
 
@@ -241,10 +279,10 @@ test('design: dealLine with emoji store label, URL-less deal, escaping', () => {
   assert.ok(evil.includes('a=1&amp;b=2'), 'URL ampersand must be escaped');
 });
 
-test('design: watchAlert is bold quoted keyword + deal line + footer', () => {
+test('design: watchAlert is bold quoted keyword + deal card + footer', () => {
   const alert = design.watchAlert('ghee', { title: 'Ghee 500ml', price: 149, mrp: 349, disc: 57, url: 'https://example.com/ghee' }, 'Zepto');
-  assert.ok(alert.startsWith('🔔 <b>Watch alert: "ghee"</b>\n• '), 'alert header wrong: ' + alert.slice(0, 80));
-  assert.ok(alert.includes('(57% off) — 🚀 Zepto'), 'deal line missing emoji store label');
+  assert.ok(alert.startsWith('🔔 <b>Watch alert: "ghee"</b>\n✅ 57% OFF · 🚀 Zepto\n'), 'alert header wrong: ' + alert.slice(0, 80));
+  assert.ok(alert.includes('<b>₹149</b> <s>₹349</s> · 💸 save ₹200'), 'price/savings line missing');
   assert.ok(alert.endsWith(design.footer()), 'alert must end with the pinned footer');
   const evil = design.watchAlert('<script>', { title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'Zepto');
   assert.ok(!evil.includes('<script>'), 'raw keyword leaked');
@@ -253,12 +291,15 @@ test('design: watchAlert is bold quoted keyword + deal line + footer', () => {
 
 test('design: only pinned emoji appear in design.js output', () => {
   // Every emoji the design module can emit: brand 🛒, date 📅, alert 🔔,
-  // plus the 9 store emoji. ✅ ❌ 🎉 live in bot.js (W2), not here.
+  // cadence ⚡, search 🔍, badge tiers 🔥 ⚡ 🎯 ✅, money 💰 💸, category 🏷️,
+  // plus the 9 store emoji. ❌ 🎉 live in bot.js, not here.
   const samples = [
     design.header('Fresh Deals', 'Thu, 19 Nov 2026 · 6:15 PM IST'),
     design.footer(), design.cadenceLine(50), design.noDealsLine(),
     design.sectionTitle('Zepto'),
     design.dealLine({ title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'Swiggy Instamart'),
+    design.dealCard({ title: 'X', price: 1, mrp: 2, disc: 95, url: '', cat: 'Test' }, 'JioMart'),
+    design.dealCard({ title: 'X', price: 1, mrp: 2, disc: 50, url: '', cat: 'Test' }, 'JioMart'),
     design.watchAlert('kw', { title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'JioMart'),
   ].join('\n');
   for (const banned of ['👋', '🆓', '📋', '🏬', '🏆', '📊', '💎']) {

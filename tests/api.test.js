@@ -334,9 +334,14 @@ test('cron: runs the fixture digest -> 200 {sent, failed, subscribers, messages}
   assert.equal(sent.length, 2, 'both digest messages must be sent to the subscriber');
   assert.deepEqual(
     sent.map((c) => c.text),
-    expectedMessages,
+    expectedMessages.map((m) => m.text),
     'sent texts must equal the fixture digest (same shape as npm run digest:dry)'
   );
+  // Each digest message carries its Grab Deal buttons on reply_markup.
+  assert.ok(sent[0].reply_markup, 'digest message must attach Grab Deal buttons');
+  const firstButtons = JSON.parse(JSON.stringify(sent[0].reply_markup.inline_keyboard)).flat();
+  assert.ok(firstButtons.length >= 1 && firstButtons.length <= 8, 'button count must respect the 8-per-message cap');
+  assert.ok(firstButtons.every((b) => b.text === '🛒 Grab Deal' && b.url.startsWith('https://')), 'every button must be a Grab Deal link');
 });
 
 // (e) vercel.json parses to {} — no Vercel crons: the 15-min digest is
@@ -390,7 +395,7 @@ test('cron auth: correct secret via ?secret= -> 200, digest runs', async (t) => 
   assert.equal(res.body.messages, 2, 'fixture digest is 2 messages');
   const sent = apiCalls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
   assert.equal(sent.length, 2, 'both digest messages must be sent to the subscriber');
-  assert.deepEqual(sent.map((c) => c.text), expectedMessages);
+  assert.deepEqual(sent.map((c) => c.text), expectedMessages.map((m) => m.text));
 });
 
 // (g2) Cron auth: correct secret via ?secret= in the URL string -> runs.

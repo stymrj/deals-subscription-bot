@@ -5,8 +5,17 @@
 //
 // Functional emoji — ONLY these may appear in bot messages:
 //   🛒 brand header, 📅 date line, 🔔 watch alert, ✅ on/success,
-//   ❌ off, 🎉 subscribe confirmation — plus the per-store emoji in
-//   STORE_EMOJI below. No other emoji anywhere.
+//   ❌ off, 🎉 subscribe confirmation, 🔥 hot / 90%+ deal,
+//   ⚡ 75%+ deal / fresh-drop marker, 💰 price, 💸 savings,
+//   🏷️ category tag, 🎯 60%+ deal / top pick, 🔍 search / no-deals,
+//   ⚙️ settings section, 🔄 all-stores filter
+//   — plus the per-store emoji in STORE_EMOJI below. No other emoji
+//   anywhere.
+//
+// One rendering per deal: dealCard() is used byte-identically by the
+// digest, /deals, /top, /hot, /search and watch alerts. dealLine() is
+// kept for backwards compatibility (tests + older callers) but no
+// user-facing surface renders through it anymore.
 'use strict';
 
 const BRAND_NAME = 'PriceDrop Hunter';
@@ -74,11 +83,75 @@ function footer() {
 }
 
 function cadenceLine(minDiscount) {
-  return `Fresh deals every 15 minutes · ${minDiscount}%+ off · duplicates removed`;
+  return `⚡ Fresh deals every 15 minutes · ${minDiscount}%+ off · duplicates removed`;
 }
 
-// One deal line. If it would exceed maxLen on its own, shorten the title
-// (never truncate mid-deal / mid-line anywhere else).
+// Discount badge by tier: the hotter the deal, the louder the badge.
+function discountBadge(disc) {
+  const d = Math.round(Number(disc) || 0);
+  if (d >= 90) return `🔥 ${d}% OFF`;
+  if (d >= 75) return `⚡ ${d}% OFF`;
+  if (d >= 60) return `🎯 ${d}% OFF`;
+  return `✅ ${d}% OFF`;
+}
+
+function savingsText(deal) {
+  const mrp = Number(deal.mrp) || 0;
+  const price = Number(deal.price) || 0;
+  if (mrp > price) return `💸 save ${inr(mrp - price)}`;
+  return '';
+}
+
+function categoryTag(deal) {
+  const cat = String(deal.cat || '').trim();
+  return cat ? `🏷️ ${escapeHtml(cat)}` : '';
+}
+
+// The one deal rendering, used byte-identically everywhere:
+//   {badge} · {store}
+//   <linked title>
+//   💰 ₹price <s>₹mrp</s> · 💸 save ₹X
+//   🏷️ category            (only when the feed carries one)
+// If it would exceed maxLen on its own, shorten the title (never
+// truncate mid-deal / mid-line anywhere else).
+function dealCard(deal, store, maxLen = MAX_LEN) {
+  const badge = discountBadge(deal.disc);
+  const storePart = storeLabel(store);
+  const url = String(deal.url || '');
+  const linkOpen = url ? `<a href="${escapeHtml(url)}">` : '';
+  const linkClose = url ? '</a>' : '';
+  const save = savingsText(deal);
+  const priceLine = save
+    ? `💰 <b>${inr(deal.price)}</b> <s>${inr(deal.mrp)}</s> · ${save}`
+    : `💰 <b>${inr(deal.price)}</b> <s>${inr(deal.mrp)}</s>`;
+  const catLine = categoryTag(deal);
+  let title = String(deal.title || '');
+  const build = (t) => {
+    const lines = [`${badge} · ${storePart}`, `${linkOpen}${escapeHtml(t)}${linkClose}`, priceLine];
+    if (catLine) lines.push(catLine);
+    return lines.join('\n');
+  };
+  let card = build(title);
+  if (card.length > maxLen) {
+    const overhead = build('').length;
+    const keep = Math.max(10, maxLen - overhead - 1); // room for '…'
+    title = title.slice(0, keep) + '…';
+    card = build(title);
+  }
+  return card;
+}
+
+// Inline "Grab Deal" URL button for one deal (Telegram url button).
+// Empty when the deal has no URL — the title link already covers it.
+function dealButtons(deal) {
+  const url = String(deal.url || '').trim();
+  return url ? [{ text: '🛒 Grab Deal', url }] : [];
+}
+
+// One deal line. Kept for backwards compatibility (tests + older
+// callers); no user-facing surface renders through it anymore —
+// dealCard() is the one rendering. If it would exceed maxLen on its own,
+// shorten the title (never truncate mid-deal / mid-line anywhere else).
 function dealLine(deal, store, maxLen = MAX_LEN) {
   const pricePart = `<b>${inr(deal.price)}</b> <s>${inr(deal.mrp)}</s> (${deal.disc}% off) — ${storeLabel(store)}`;
   const url = String(deal.url || '');
@@ -96,16 +169,17 @@ function dealLine(deal, store, maxLen = MAX_LEN) {
 }
 
 function noDealsLine() {
-  return 'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.';
+  return '🔍 No deals right now matching your stores & discount — fresh deals land every 15 minutes, so check back soon, or try /deals, /hot or /search.';
 }
 
 function watchAlert(keyword, deal, store) {
-  return `🔔 <b>Watch alert: "${escapeHtml(keyword)}"</b>\n` + dealLine(deal, store) + footer();
+  return `🔔 <b>Watch alert: "${escapeHtml(keyword)}"</b>\n` + dealCard(deal, store) + footer();
 }
 
 module.exports = {
   BRAND_NAME, STORE_EMOJI, MAX_LEN,
   escapeHtml, inr, istDateLabel, istDateTimeLabel,
   storeEmoji, storeLabel, sectionTitle, header, footer, cadenceLine,
+  discountBadge, savingsText, categoryTag, dealCard, dealButtons,
   dealLine, noDealsLine, watchAlert,
 };

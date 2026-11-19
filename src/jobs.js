@@ -35,8 +35,14 @@
 const cron = require('node-cron');
 const { fetchDeals, STORE_ORDER } = require('./feed');
 const { formatDigest } = require('./digest');
-const { watchAlert } = require('./design');
+const { watchAlert, dealButtons } = require('./design');
 const { DEDUPE_WINDOW_MS, dealKey, selectUserDeals } = require('./dedupe');
+
+// reply_markup for one message's Grab Deal buttons (one button per row).
+function buttonsMarkup(buttons) {
+  if (!buttons || !buttons.length) return undefined;
+  return { inline_keyboard: buttons.map((b) => [{ text: b.text, url: b.url }]) };
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const TZ = 'Asia/Kolkata';
@@ -156,7 +162,10 @@ async function runDigest(bot, db, config = {}, deps = {}) {
     let userFailed = false;
     try {
       for (const msg of messages) {
-        await bot.telegram.sendMessage(chatId, msg, { parse_mode: 'HTML', disable_web_page_preview: true });
+        const extra = { parse_mode: 'HTML', disable_web_page_preview: true };
+        const markup = buttonsMarkup(msg.buttons);
+        if (markup) extra.reply_markup = markup;
+        await bot.telegram.sendMessage(chatId, msg.text, extra);
         messagesSent++;
       }
       if (messages.length) sent++;
@@ -180,11 +189,15 @@ async function runDigest(bot, db, config = {}, deps = {}) {
             if (!hit) continue;
             try {
               // One alert per matching deal, built by the shared design
-              // helper (alert line + shared dealLine + footer).
+              // helper (alert line + shared dealCard + footer), with the
+              // same Grab Deal button as every other deal surface.
+              const alertExtra = { parse_mode: 'HTML', disable_web_page_preview: true };
+              const alertMarkup = buttonsMarkup(dealButtons(deal));
+              if (alertMarkup) alertExtra.reply_markup = alertMarkup;
               await bot.telegram.sendMessage(
                 chatId,
                 watchAlert(hit, deal, store),
-                { parse_mode: 'HTML', disable_web_page_preview: true }
+                alertExtra
               );
               alertsSent++;
             } catch (err) {
