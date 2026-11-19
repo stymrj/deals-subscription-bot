@@ -1,6 +1,9 @@
-// digest.js — build the daily subscriber digest (Telegram HTML).
+// digest.js — build the subscriber digest (Telegram HTML).
 // Pure functions, no I/O: formatDigest(dealsByStore, config) -> string[]
 // (already split into sendable messages) and splitMessages(blocks, ...).
+// Cadence: fresh deals every 15 minutes (dedupe lives in the jobs layer),
+// so stores with no new deals are omitted entirely and an empty digest
+// sends nothing (returns []).
 'use strict';
 
 const { STORE_ORDER } = require('./feed');
@@ -28,6 +31,19 @@ function istDateLabel(date) {
   return `${get('weekday')}, ${get('day')} ${get('month')} ${get('year')}`;
 }
 
+// IST date + time, e.g. "Thu, 19 Nov 2026 · 6:15 PM IST".
+// Accepts a Date, an ISO string, or nothing (= now).
+function istDateTimeLabel(date) {
+  const d = date ? new Date(date) : new Date();
+  const parts = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  }).formatToParts(d);
+  const get = t => (parts.find(p => p.type === t) || {}).value || '';
+  // en-IN renders the day period lowercase ("pm"); the digest shows "PM".
+  return `${get('weekday')}, ${get('day')} ${get('month')} ${get('year')} · ${get('hour')}:${get('minute')} ${get('dayPeriod').toUpperCase()} IST`;
+}
+
 // One deal line. If it would exceed maxLen on its own, shorten the title
 // (never truncate mid-deal / mid-line anywhere else).
 function dealLine(deal, store, maxLen = MAX_LEN) {
@@ -51,24 +67,26 @@ function dealLine(deal, store, maxLen = MAX_LEN) {
 // <= maxLen chars. Splits happen only BETWEEN blocks, never inside one.
 // If blocks still overflow maxMessages, whole trailing deals are dropped
 // (lowest priority = last stores) and the last message notes the count.
+// Only deal blocks ('• ...') count towards the dropped-deals note;
+// headings/footer dropped with them are not deals.
 function splitMessages(blocks, maxLen = MAX_LEN, maxMessages = MAX_MESSAGES) {
   const messages = [];
   let cur = '';
   let dropped = 0;
   for (const block of blocks) {
-    if (messages.length >= maxMessages) { dropped++; continue; } // cap hit: drop whole trailing blocks
+    if (messages.length >= maxMessages) { if (block.startsWith('• ')) dropped++; continue; } // cap hit: drop whole trailing blocks
     const candidate = cur ? cur + '\n' + block : block;
     if (candidate.length <= maxLen) { cur = candidate; continue; }
     if (cur) messages.push(cur);
-    if (messages.length >= maxMessages) { dropped++; cur = ''; continue; }
+    if (messages.length >= maxMessages) { if (block.startsWith('• ')) dropped++; cur = ''; continue; }
     cur = block.length > maxLen ? block.slice(0, maxLen) : block; // safety net; deal lines are pre-shortened
   }
   if (cur) {
-    if (messages.length >= maxMessages) dropped++;
+    if (messages.length >= maxMessages) { if (cur.startsWith('• ')) dropped++; }
     else messages.push(cur);
   }
   if (dropped > 0 && messages.length) {
-    const note = `\n… +${dropped} more deal${dropped === 1 ? '' : 's'} in tomorrow's digest`;
+    const note = `\n… +${dropped} more deal${dropped === 1 ? '' : 's'} in the next update`;
     const last = messages[messages.length - 1];
     if (last.length + note.length <= maxLen) messages[messages.length - 1] = last + note;
   }
@@ -78,34 +96,39 @@ function splitMessages(blocks, maxLen = MAX_LEN, maxMessages = MAX_MESSAGES) {
 function formatDigest(dealsByStore, config = {}) {
   const min = Number(config.MIN_DISCOUNT ?? config.minDiscount ?? 50);
   const top = Number(config.DIGEST_TOP_PER_STORE ?? config.topPerStore ?? 5);
-  const dateLabel = istDateLabel(config.date);
-
-  const blocks = [];
-  blocks.push(
-    `<b>🛒 PriceDrop Hunter — Daily Digest</b>\n📅 ${dateLabel} · Deals ${min}% off or more\n💎 Free subscriber digest — prices change fast, check the link before buying.`,
-  );
+  const dateTimeLabel = istDateTimeLabel(config.date);
 
   const stores = [
     ...STORE_ORDER.filter(s => s in (dealsByStore || {})),
     ...Object.keys(dealsByStore || {}).filter(s => !STORE_ORDER.includes(s)),
   ];
+  // Filter + sort + cap per store first. Stores with no deals after
+  // filtering are omitted entirely — at a 15-minute cadence a
+  // "no deals" line per store would spam every update.
+  const perStore = [];
   for (const store of stores) {
     const deals = ((dealsByStore || {})[store] || [])
       .filter(d => d && Number(d.disc) >= min)
       .sort((a, b) => b.disc - a.disc || (b.mrp - b.price) - (a.mrp - a.price))
       .slice(0, top);
+    if (deals.length) perStore.push([store, deals]);
+  }
+  if (!perStore.length) return []; // no deals in any store: send nothing
+
+  const blocks = [];
+  blocks.push(
+    `<b>🛒 PriceDrop Hunter — Fresh Deals</b>\n📅 ${dateTimeLabel}\n${min}%+ off · fresh deals every 15 minutes · duplicates removed\n💎 Free subscriber digest — prices change fast, check the link before buying.`,
+  );
+
+  for (const [store, deals] of perStore) {
     blocks.push(`\n<b>${escapeHtml(store)}</b>`);
-    if (!deals.length) {
-      blocks.push(`${store}: no deals above ${min}% today`);
-    } else {
-      // Reserve room for the header/store-heading/footer blocks so a
-      // single near-limit deal still fits in one message with them.
-      for (const deal of deals) blocks.push(dealLine(deal, store, MAX_LEN - 350));
-    }
+    // Reserve room for the header/store-heading/footer blocks so a
+    // single near-limit deal still fits in one message with them.
+    for (const deal of deals) blocks.push(dealLine(deal, store, MAX_LEN - 350));
   }
   blocks.push(`\n—\nPriceDrop Hunter · Manage your subscription: /start · Stop anytime with /stop`);
 
   return splitMessages(blocks, MAX_LEN, MAX_MESSAGES);
 }
 
-module.exports = { escapeHtml, istDateLabel, dealLine, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };
+module.exports = { escapeHtml, istDateLabel, istDateTimeLabel, dealLine, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };

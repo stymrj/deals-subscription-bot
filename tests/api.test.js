@@ -138,6 +138,70 @@ async function warmBot(store) {
   return built;
 }
 
+// --- Cron auth helpers ---
+// The handler reads the expected secret from the real config module in
+// production, falling back to process.env.CRON_SECRET when config cannot
+// load (here ADMIN_ID is unset, so config throws). Tests therefore
+// control the secret via process.env — the __setTestOverrides seam
+// config is NOT read by the handler, because auth runs before getBot().
+const FAKE_CRON_SECRET = 'test-cron-secret-not-real';
+
+// Set (or delete, when value is undefined) process.env.CRON_SECRET for
+// the duration of one test, restoring the previous value afterwards.
+function withCronSecretEnv(t, value) {
+  const hadPrev = Object.prototype.hasOwnProperty.call(process.env, 'CRON_SECRET');
+  const prev = process.env.CRON_SECRET;
+  if (value === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = value;
+  t.after(() => {
+    if (hadPrev) process.env.CRON_SECRET = prev;
+    else delete process.env.CRON_SECRET;
+  });
+}
+
+// Stub global fetch so fetchDeals serves the fixture per store, by repo slug
+// (same mapping as the cron test above).
+function stubFixtureFetch(t, fixture) {
+  const origFetch = globalThis.fetch;
+  const slugToStore = {
+    'Amazon-Now-Deals': 'Amazon Now', 'Blinkit-Deals': 'Blinkit',
+    'Flipkart-Minute-Deals': 'Flipkart Minutes', 'BigBasket-Deals': 'BigBasket',
+    'Myntra-Deals': 'Myntra', 'Croma-Deals': 'Croma', 'Zepto-Deals': 'Zepto',
+    'Swiggy-Instamart-Deals': 'Swiggy Instamart', 'JioMart-Deals': 'JioMart',
+  };
+  globalThis.fetch = async (url) => {
+    const hit = Object.keys(slugToStore).find((slug) => String(url).includes(slug));
+    const name = hit ? slugToStore[hit] : 'Amazon Now';
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ store: name, generatedAt: '2026-11-10T03:00:00Z', deals: fixture[name] || [] }),
+    };
+  };
+  t.after(() => {
+    globalThis.fetch = origFetch;
+  });
+}
+
+// Shared setup for cron tests that expect the digest to RUN: one active
+// subscriber, warmed bot, fixture fetch stub, clean apiCalls.
+async function setupRunningCron(t) {
+  const store = makeFakeStore();
+  await store.upsertSubscriber({ user_id: USER_ID, name: 'Test', username: 'testuser' });
+  await store.setStatus(USER_ID, 'active');
+  await warmBot(store);
+  const fixture = loadFixture();
+  const expectedMessages = formatDigest(fixture, testConfig());
+  assert.equal(expectedMessages.length, 2, 'fixture digest must be 2 messages (same as npm run digest:dry)');
+  stubFixtureFetch(t, fixture);
+  t.after(() => {
+    __resetTestOverrides();
+    apiCalls.length = 0;
+  });
+  apiCalls.length = 0;
+  return { fixture, expectedMessages };
+}
+
 // (a) Webhook accepts a stubbed /start update end-to-end through the real
 // createBot + fake async store and returns 200.
 test('webhook: POST /start update -> 200 {ok:true}, welcome reply sent, subscriber recorded', async (t) => {
@@ -275,10 +339,131 @@ test('cron: runs the fixture digest -> 200 {sent, failed, subscribers, messages}
   );
 });
 
-// (e) vercel.json parses and has exactly the required cron.
-test('vercel.json: parses, exactly one cron, /api/cron-digest at 30 3 * * *', () => {
+// (e) vercel.json parses to {} — no Vercel crons: the 15-min digest is
+// triggered by GitHub Actions (.github/workflows/digest-15min.yml),
+// because Vercel Hobby allows at most one cron run per day.
+test('vercel.json: parses to {} — no Vercel crons (GitHub Actions triggers the digest)', () => {
   const raw = fs.readFileSync(path.join(__dirname, '..', 'vercel.json'), 'utf8');
   const parsed = JSON.parse(raw);
-  assert.deepEqual(Object.keys(parsed), ['crons'], 'vercel.json must contain only the crons key');
-  assert.deepEqual(parsed.crons, [{ path: '/api/cron-digest', schedule: '30 3 * * *' }]);
+  assert.deepEqual(parsed, {}, 'vercel.json must be empty: no Vercel cron (Hobby allows one run/day)');
+});
+
+// (f) Cron auth: CRON_SECRET unset + no header -> 401, zero sends.
+// The 401 must happen BEFORE getBot()/runDigest, so no digest message
+// can go out (asserted on the fake bot's captured Telegram calls).
+test('cron auth: CRON_SECRET unset + no header -> 401, zero sends', async (t) => {
+  withCronSecretEnv(t, undefined);
+  const store = makeFakeStore();
+  await store.upsertSubscriber({ user_id: USER_ID, name: 'Test', username: 'testuser' });
+  await store.setStatus(USER_ID, 'active');
+  await warmBot(store);
+  t.after(() => {
+    __resetTestOverrides();
+    apiCalls.length = 0;
+  });
+  apiCalls.length = 0;
+
+  const res = makeRes();
+  await cronHandler({ method: 'GET', headers: {} }, res);
+
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(res.body, { ok: false, error: 'Unauthorized' });
+  assert.equal(apiCalls.length, 0, 'a 401 must send nothing (runDigest never runs)');
+  assert.equal(
+    apiCalls.filter((c) => c.method === 'sendMessage').length,
+    0,
+    'no sendMessage may happen on a 401'
+  );
+});
+
+// (g) Cron auth: correct secret via ?secret= query param -> digest runs.
+test('cron auth: correct secret via ?secret= -> 200, digest runs', async (t) => {
+  withCronSecretEnv(t, FAKE_CRON_SECRET);
+  const { expectedMessages } = await setupRunningCron(t);
+
+  const res = makeRes();
+  await cronHandler({ method: 'GET', headers: {}, query: { secret: FAKE_CRON_SECRET } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.sent, 1, 'one active subscriber must receive the digest');
+  assert.equal(res.body.messages, 2, 'fixture digest is 2 messages');
+  const sent = apiCalls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
+  assert.equal(sent.length, 2, 'both digest messages must be sent to the subscriber');
+  assert.deepEqual(sent.map((c) => c.text), expectedMessages);
+});
+
+// (g2) Cron auth: correct secret via ?secret= in the URL string -> runs.
+// (Vercel populates req.query, but the handler also parses req.url.)
+test('cron auth: correct secret via ?secret= in req.url -> 200, digest runs', async (t) => {
+  withCronSecretEnv(t, FAKE_CRON_SECRET);
+  await setupRunningCron(t);
+
+  const res = makeRes();
+  await cronHandler(
+    { method: 'GET', headers: {}, url: `/api/cron-digest?secret=${FAKE_CRON_SECRET}` },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.sent, 1);
+});
+
+// (h) Cron auth: correct secret via x-cron-secret header -> digest runs.
+test('cron auth: correct secret via x-cron-secret header -> 200, digest runs', async (t) => {
+  withCronSecretEnv(t, FAKE_CRON_SECRET);
+  await setupRunningCron(t);
+
+  const res = makeRes();
+  await cronHandler({ method: 'GET', headers: { 'x-cron-secret': FAKE_CRON_SECRET } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.sent, 1, 'one active subscriber must receive the digest');
+  assert.equal(res.body.messages, 2, 'fixture digest is 2 messages');
+  const sent = apiCalls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
+  assert.equal(sent.length, 2, 'both digest messages must be sent to the subscriber');
+});
+
+// (i) Cron auth: wrong secret (header and query) -> 401, zero sends.
+test('cron auth: wrong secret -> 401, zero sends', async (t) => {
+  withCronSecretEnv(t, FAKE_CRON_SECRET);
+  const store = makeFakeStore();
+  await store.upsertSubscriber({ user_id: USER_ID, name: 'Test', username: 'testuser' });
+  await store.setStatus(USER_ID, 'active');
+  await warmBot(store);
+  t.after(() => {
+    __resetTestOverrides();
+    apiCalls.length = 0;
+  });
+  apiCalls.length = 0;
+
+  for (const req of [
+    { method: 'GET', headers: { 'x-cron-secret': 'wrong-secret' } },
+    { method: 'GET', headers: {}, query: { secret: 'wrong-secret' } },
+  ]) {
+    const res = makeRes();
+    await cronHandler(req, res);
+    assert.equal(res.statusCode, 401, `wrong secret must 401: ${JSON.stringify(req)}`);
+    assert.deepEqual(res.body, { ok: false, error: 'Unauthorized' });
+  }
+  assert.equal(apiCalls.length, 0, 'wrong-secret hits must send nothing');
+});
+
+// (j) Cron auth: x-vercel-cron header present, no secret configured ->
+// digest runs (keeps the endpoint working if a Vercel cron is re-added).
+test('cron auth: x-vercel-cron header, no secret configured -> 200, digest runs', async (t) => {
+  withCronSecretEnv(t, undefined);
+  await setupRunningCron(t);
+
+  const res = makeRes();
+  await cronHandler({ method: 'GET', headers: { 'x-vercel-cron': '1' } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.sent, 1, 'one active subscriber must receive the digest');
+  assert.equal(res.body.messages, 2, 'fixture digest is 2 messages');
+  const sent = apiCalls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
+  assert.equal(sent.length, 2, 'both digest messages must be sent to the subscriber');
 });

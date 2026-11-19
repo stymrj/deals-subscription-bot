@@ -1,0 +1,38 @@
+# .github/workflows/digest-15min.yml — trigger the 15-minute digest.
+#
+# Vercel Hobby allows at most ONE cron run per day, so the 15-minute
+# cadence cannot be a Vercel cron (Pro is $20/mo — the bot stays free).
+# This workflow calls the deployed /api/cron-digest endpoint every
+# 15 minutes instead. The endpoint is gated on a shared secret
+# (see api/cron-digest.js): the secret is sent ONLY as the
+# `x-cron-secret` header, read from the GitHub repo secret CRON_SECRET
+# (never in the URL, never a literal value in this file). The same
+# value must also be set as the CRON_SECRET env var on the Vercel
+# project — the parent creates the value at deploy time.
+#
+# Concurrency: cancel-in-progress is false so a slow digest run is
+# never killed mid-send by the next tick; runs queue instead.
+# The digest fetches 9 feeds and sends, so curl gets a generous
+# 300 s timeout and --fail so a non-2xx response fails the step.
+
+name: Digest (every 15 min)
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: digest-15min
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger digest
+        run: |
+          curl --fail --max-time 300 \
+            -X POST \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            https://deals-subscription-bot.vercel.app/api/cron-digest

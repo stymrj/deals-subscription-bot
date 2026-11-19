@@ -1,6 +1,105 @@
 # Telegram Subscription Bot — report
 
-## 2026-11-19: Vercel + Turso adaptation (current state)
+## 2026-11-19: 15-minute digest + dedupe + better design (current state)
+
+**What changed:** on 2026-11-19 Satyam asked for the digest every 15
+minutes instead of once a day, with no duplicate sends, a better message
+design, and the covered stores listed on `/start`. Built the same evening
+in the already-deployed repo (Vercel + Turso live since 18:19 IST):
+
+- **Trigger — GitHub Actions, not Vercel Cron.** Vercel Hobby allows at
+  most ONE cron run per day, so a 15-minute cadence cannot be a Vercel
+  cron (Pro is $20/mo — the bot stays free everywhere). `vercel.json`
+  is now `{}` (no crons). New `.github/workflows/digest-15min.yml`:
+  schedule `*/15 * * * *` + `workflow_dispatch`, concurrency group
+  `digest-15min` with `cancel-in-progress: false`, one `ubuntu-latest`
+  job that POSTs to `https://deals-subscription-bot.vercel.app/api/cron-digest`
+  with `curl --fail --max-time 300`, the secret sent only as the
+  `x-cron-secret` header from `${{ secrets.CRON_SECRET }}` (never in
+  the URL, no literal value anywhere).
+- **Auth on the endpoint.** `api/cron-digest.js` now gates BEFORE any
+  bot work: accept if (a) the `x-vercel-cron` header is present
+  (keeps working if a Vercel cron is ever re-added; header alone is
+  NOT security — a spoofed hit can at worst trigger one extra digest
+  send), or (b) `CRON_SECRET` is configured and the request carries
+  the exact value via `?secret=` or the `x-cron-secret` header
+  (constant-time compare). Anything else → 401
+  `{ok:false,error:'Unauthorized'}` and nothing is sent. The secret is
+  env `CRON_SECRET` (`src/config.js`, optional, never throws when
+  missing). No secret value was invented or stored anywhere — the
+  parent creates it at deploy time and sets it in TWO places to the
+  same value: the Vercel env var AND the GitHub repo secret
+  `CRON_SECRET`. Until both match, workflow calls 401.
+- **Dedupe — 7 days, in Turso.** New `posted_deals` table
+  (`deal_key TEXT PRIMARY KEY, store TEXT, title TEXT, posted_at
+  INTEGER`) + store methods `getRecentPostedKeys(sinceMs)` and
+  `markPosted(entries)` (INSERT OR REPLACE, so a deal re-sent after its
+  window expired restarts its 7-day clock). Key = `store|normalized
+  URL` when a URL exists, else `store|normalized title|sell price`
+  (URL: trim/strip-trailing-slashes/lowercase; title:
+  trim/collapse-whitespace/lowercase). New `src/dedupe.js` holds
+  `dealKey`, `selectDeals` (mirrors `formatDigest` exactly: disc ≥ min,
+  sort disc desc then savings desc, slice top N — with a
+  must-stay-in-sync comment) and `DEDUPE_WINDOW_MS`. `runDigest`
+  drops deals posted within 7 days, omits stores with zero new deals,
+  and if nothing is new sends NOTHING (no "no deals" spam every 15
+  minutes) — return `{sent:0, failed:[], subscribers:<count>,
+  messages:0, newDeals:0}`. Keys are marked only if `sent > 0`, so a
+  failed or subscriber-less run never burns deals. `npm run
+  digest:dry` prints what would be sent and never touches dedupe
+  state. Local polling cron moved from `0 9 * * *` to `*/15 * * * *`
+  (Asia/Kolkata), matching production. `runDigest` degrades gracefully
+  if a store lacks the dedupe methods (treats recent as empty, skips
+  marking) so the API tests' fake store still works.
+- **Better digest design.** `formatDigest` redesigned (parse_mode
+  HTML kept, ≤3900 chars, ≤2 messages, never cut mid-deal): header
+  "🛒 PriceDrop Hunter — Fresh Deals" + IST date AND time (new
+  exported `istDateTimeLabel`) + terms line "50%+ off · fresh deals
+  every 15 minutes · duplicates removed"; one section per store with
+  the store name bold; each deal one indivisible line (linked name,
+  sell price, `<s>` MRP, discount %). Stores with no deals are omitted
+  entirely; empty input → `[]` (no message). Dropped-deals note now
+  reads "… +N more deals in the next update". (19 Nov 2026 is a
+  Thursday — the brief's "Tue" example was wrong; the label computes
+  the real weekday.)
+- **Stores on /start and /help.** Both render all 9 stores from the
+  ONE shared constant `STORE_ORDER` in `src/feed.js` (via a
+  `storeListText()` helper in `src/bot.js`) — no second hardcoded list.
+  Both state: free subscription, fresh deals every 15 minutes, only
+  50%+ off, duplicates removed, plus the commands. All "9 AM IST /
+  every morning / daily" copy is gone from `src/bot.js` and
+  `src/digest.js` (including the `/stop` reply). `nextDigestLabel`
+  now returns the next 15-minute IST boundary (name and signature
+  kept, `digestHourIst` param ignored and documented; also exported
+  for tests). `config.digestHourIst` still exists but no longer drives
+  anything in `bot.js`.
+- **Coordinator merge fixes:** 4 stale "Vercel cron / daily digest"
+  comments in `src/index.js` and `src/jobs.js` corrected to the
+  GitHub Actions trigger. No code changes beyond comments.
+- **Verified (coordinator re-run, merged tree):** `npm install` clean;
+  `node --check` clean on all src + api + tests JS; workflow YAML
+  parses (schedule `*/15 * * * *`, dispatch, concurrency,
+  ubuntu-latest, curl step); **`npm test`: 70 tests, 70 pass, 0 fail**
+  (was 39: +6 auth, +16 dedupe/jobs, +3 bot, digest rewritten, plus
+  parity/graceful-degradation coverage); `npm run digest:dry` prints
+  the new format, 2 messages (3895 + 1468 chars), Croma (empty in
+  fixture) omitted, sends nothing; greps clean — no `30 3 * * *` in
+  code (only dated history in this report), no literal secret value
+  (only `${{ secrets.CRON_SECRET }}` + the fake test value), no
+  bot-token pattern, no "9 AM / every morning / Daily Digest" in
+  src/ or api/, no `better-sqlite3` reintroduction (only the
+  pre-existing `:memory:` comment in `src/db.js` + dated history
+  below). Full evidence at the bottom of this report.
+- **Not done / honest note:** NOTHING pushed, NOT deployed, NO
+  secrets created — the parent pushes to main (auto-deploys on
+  Vercel), creates `CRON_SECRET` in both places, and verifies with a
+  manual `workflow_dispatch` run. And the live digest STILL sends
+  nothing until the 9 scanner `feed` branches exist
+  (`scanner-patches/` staged, not applied) — the 15-minute runs will
+  200 with `sent:0` until then, which is correct behaviour, not a
+  failure.
+
+## 2026-11-19: Vercel + Turso adaptation (superseded the same evening by the 15-minute change above — kept as history)
 
 **What changed:** on 2026-11-19 Satyam picked **Vercel + Turso (free)**
 as the hosting, after saying something already runs on his Oracle
@@ -118,11 +217,13 @@ on Vercel + Turso.
 | `src/config.js` | Single env reader; throws on missing required vars; all defaults in one place |
 | `src/db.js` | Turso store (`@libsql/client`): subscribers table, all contract methods (async) |
 | `src/bot.js` | /start, /help, /status, /stop, /myid, /subscribers, /broadcast (admin-only); free Subscribe flow |
-| `api/_bot.js`, `api/webhook.js`, `api/cron-digest.js` | Vercel serverless: shared lazy bot, Telegram webhook receiver, daily digest cron |
-| `vercel.json` | Vercel Cron: `/api/cron-digest` at `30 3 * * *` (= 09:00 IST) |
+| `api/_bot.js`, `api/webhook.js`, `api/cron-digest.js` | Vercel serverless: shared lazy bot, Telegram webhook receiver, 15-min digest endpoint (GitHub Actions trigger, gated on `CRON_SECRET`) |
+| `vercel.json` | No crons (`{}`) — digest triggered by GitHub Actions, not a Vercel cron |
+| `.github/workflows/digest-15min.yml` | GitHub Actions: POSTs to `/api/cron-digest` every 15 min + manual dispatch |
+| `src/dedupe.js` | Deal keys + 7-day dedupe filter (`posted_deals`) used by `runDigest` |
 | `src/feed.js` | Fetches the 9 store `deals.json` feeds (10 s timeout each; one failed store = empty list + warning, never crashes the digest); `FEED_URLS` override; fixture loader |
-| `src/digest.js` | Formats the daily digest: IST date header, top 5/store ≥ MIN_DISCOUNT, per-deal `title — ₹price <s>₹mrp</s> (disc% off) — store` with link, `<store>: no deals above 50% today` lines, HTML-escaped, split into ≤2 messages of ≤3900 chars, never cut mid-deal |
-| `src/jobs.js` | node-cron, Asia/Kolkata: digest 09:00 IST (fetch-then-send inside the one job) — polling/local mode only; webhook mode schedules nothing |
+| `src/digest.js` | Formats the digest: IST date+time header, top 5/store ≥ MIN_DISCOUNT, per-deal `title — ₹price <s>₹mrp</s> (disc% off) — store` with link, stores with no deals omitted, empty digest → no message, HTML-escaped, split into ≤2 messages of ≤3900 chars, never cut mid-deal |
+| `src/jobs.js` | node-cron, Asia/Kolkata: digest every 15 minutes (fetch → dedupe → send) — polling/local mode only; webhook mode schedules nothing |
 | `src/*.test.js` + `tests/api.test.js` | Tests, `node:test`, all stubbed (no network, no real token, no live Turso) |
 | `fixtures/deals.json` | Realistic stub deals, 9 stores, 40 deals, Croma empty, one 95% deal |
 | `scripts/dry-run-digest.js` | `npm run digest:dry` — prints the formatted digest from fixtures, sends nothing |
@@ -136,10 +237,11 @@ on Vercel + Turso.
   └─ once a day 08:30 IST: deals-feed.yml runs scanner --json,
      commits deals.json to the repo's `feed` branch
         └─ raw.githubusercontent.com/stymrj/<Repo>/feed/deals.json (public)
-              └─ subscriber bot (09:00 IST): fetch 9 feeds → format digest
-                   → send to every subscriber
+              └─ subscriber bot (every 15 min): fetch 9 feeds → drop deals
+                   sent in the last 7 days → format → send only new deals
+                   (nothing if none new)
 User → /start → Subscribe (free, nothing to pay)
-  → subscriber, digest every morning 09:00 IST
+  → subscriber, digest every 15 minutes (new deals only)
   → /stop anytime to stop the digest; /start → Subscribe to re-join
 Admin → /subscribers (counts) • /broadcast (message all subscribers)
 ```
@@ -162,14 +264,14 @@ Coverage caveats (from worker 2, not blockers): Zepto feed covers only 5 staples
 
 ## Env vars (free bot on Vercel + Turso — names only, no values anywhere)
 
-Required (blank in `.env.example`, bot refuses to start without them): `BOT_TOKEN` (from @BotFather), `ADMIN_ID` (via the bot's `/myid`). Required in production (webhook mode): `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (remote Turso URL only — a `file:` URL needs no token). Optional with defaults: `MIN_DISCOUNT=50`, `DIGEST_TOP_PER_STORE=5`, `DIGEST_HOUR_IST=9`, `BOT_MODE=polling`, `PORT=3000`, `DATABASE_PATH=./data/subscribers.db` (local-dev file fallback only), `FEED_URLS` (blank = built-in 9-store list), `WEBHOOK_URL` (webhook mode only). Removed 2026-11-19: `UPI_ID`, `UPI_PAYEE`, `PRICE_MONTHLY_PAISA`, `PLAN_DAYS`, `TRIAL_DAYS`.
+Required (blank in `.env.example`, bot refuses to start without them): `BOT_TOKEN` (from @BotFather), `ADMIN_ID` (via the bot's `/myid`). Required in production (webhook mode): `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (remote Turso URL only — a `file:` URL needs no token), `CRON_SECRET` (shared secret authorising the digest endpoint — same value in the Vercel env var AND the GitHub repo secret; optional locally, where only `x-vercel-cron` calls pass). Optional with defaults: `MIN_DISCOUNT=50`, `DIGEST_TOP_PER_STORE=5`, `DIGEST_HOUR_IST=9` (no longer drives the digest — kept for compatibility), `BOT_MODE=polling`, `PORT=3000`, `DATABASE_PATH=./data/subscribers.db` (local-dev file fallback only), `FEED_URLS` (blank = built-in 9-store list), `WEBHOOK_URL` (webhook mode only). Removed 2026-11-19: `UPI_ID`, `UPI_PAYEE`, `PRICE_MONTHLY_PAISA`, `PLAN_DAYS`, `TRIAL_DAYS`.
 
 ## Setup steps for Satyam (full detail in README.md)
 
 1. @BotFather → /newbot → copy the token into `BOT_TOKEN`.
 2. Copy `.env.example` → `.env`; fill `ADMIN_ID` (message the bot `/myid` once running, or @userinfobot).
 3. Local test: `npm install`, `npm run dev`, test with a second Telegram account (/start → Subscribe, free → /status → /stop → re-subscribe; admin: /subscribers, /broadcast). Locally the bot uses a file DB — no Turso needed.
-4. Deploy — Vercel + Turso (full detail in README.md sections (g)–(h)): create the Turso database (`turso db create`, `turso db show --url`, `turso db tokens create`); import the repo into Vercel; set `BOT_TOKEN`, `ADMIN_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `BOT_MODE=webhook`, `WEBHOOK_URL` (set after the first deploy, then redeploy); verify with `getWebhookInfo` and a `/start`; check the Cron Job run after the first 9 AM IST digest. Oracle is NOT available (2026-11-19: something already runs on the Oracle account); the Render/systemd/Docker deploy files were removed in the Vercel adaptation.
+4. Deploy — Vercel + Turso (full detail in README.md sections (g)–(h)): create the Turso database (`turso db create`, `turso db show --url`, `turso db tokens create`); import the repo into Vercel; set `BOT_TOKEN`, `ADMIN_ID`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `BOT_MODE=webhook`, `WEBHOOK_URL` (set after the first deploy, then redeploy), `CRON_SECRET` (same value ALSO as the GitHub repo secret); verify with `getWebhookInfo` + `/start` + a manual `workflow_dispatch` run of "Digest (every 15 min)" (expect green + `{"ok":true,...}`). Oracle is NOT available (2026-11-19: something already runs on the Oracle account); the Render/systemd/Docker deploy files were removed in the Vercel adaptation.
 5. Scanner side (separate step, not done here): apply the `scanner-patches/` `--json` diffs + add `deals-feed.yml` to each of the 9 scanner repos, so the `feed` branches start publishing. Until then the bot's digest has no live feed — test with `npm run digest:dry` (fixtures).
 
 ## What still needs him (exact missing inputs)
@@ -180,7 +282,7 @@ Required (blank in `.env.example`, bot refuses to start without them): `BOT_TOKE
 - **Admin id** — fetched via `/myid` once the bot runs.
 - **NOT needed anymore: UPI ID + payee name.** Payment was removed 2026-11-19 — do not ask him for these.
 
-## Test evidence (2026-11-19 Vercel + Turso build — current; coordinator re-run, merged tree)
+## Test evidence (2026-11-19 Vercel + Turso build — superseded the same evening by the 15-minute change at the top: 70/70 green)
 
 - `npm install` clean (merged tree, `package-lock.json` regenerated: +22 / −38 packages, `better-sqlite3` → `@libsql/client ^0.15.0`); `node --check` clean on all src + api + tests JS files.
 - `npm test`: **39 tests, 39 pass, 0 fail** — the 33 free-build tests (migrated to the async store) plus 6 new API tests (webhook POST /start end-to-end through real `createBot` + fake async store → 200; non-POST → 405; malformed bodies → 200 with zero outbound calls; init failure → 500; cron runs the fixture digest → `{sent:1, failed:[], subscribers:1, messages:2}` with both texts byte-identical to `formatDigest(loadFixture())`; vercel.json shape). Two merge bugs were found and fixed by the coordinator: (1) libsql `file::memory:?cache=shared` shares state between clients in one process — 4 bot tests failed on leaked rows until `:memory:` was mapped to `cache=private` (verified isolated with a throwaway probe); (2) both `initDb` call sites were missing the auth-token argument — now passed as `config.tursoAuthToken`.
@@ -209,6 +311,6 @@ Required (blank in `.env.example`, bot refuses to start without them): `BOT_TOKE
 - No live Vercel deploy and no live Turso round-trip (no credentials exist yet): the webhook/cron paths are verified only through stubbed harnesses (fake async store, patched `callApi`, stubbed fetch). The first real deploy needs `BOT_TOKEN`, `ADMIN_ID`, `BOT_MODE=webhook`, `WEBHOOK_URL`, and the Turso vars set in Vercel, plus registering the webhook URL with Telegram. A remote Turso `libsql://` connection has never been opened from this code — only constructed.
 - No live Telegram round-trip (no real token exists yet): polling launch, real Subscribe tap, real admin `/broadcast` are verified only through stubbed `handleUpdate` tests.
 - No live feed: no `feed` branch exists yet (patches not applied); digest tested from fixtures only. No live GitHub Actions run of `deals-feed.yml`.
-- No `maxDuration` set on the cron function in `vercel.json` (deliberate — the plan's ceiling can't be verified without a Vercel account; if a cron run ever times out, add `"functions": {"api/cron-digest.js": {"maxDuration": 60}}`).
-- No `GET /healthz` endpoint. The `x-vercel-cron` header is NOT treated as authentication (anyone can send it) — an unauthenticated hit on `/api/cron-digest` can at worst trigger one extra digest send; noted in the code.
+- No `maxDuration` set on the digest function in `vercel.json` (deliberate — the plan's ceiling can't be verified without a Vercel account; if a digest run ever times out, add `"functions": {"api/cron-digest.js": {"maxDuration": 60}}`). The GitHub Actions workflow gives curl `--max-time 300`.
+- No `GET /healthz` endpoint. The `x-vercel-cron` header is accepted as an auth signal on `/api/cron-digest` (anyone can send it) alongside the `CRON_SECRET` — an unauthenticated hit without either is 401; a spoofed `x-vercel-cron` hit can at worst trigger one extra digest send.
 - **NOT built (upgrade paths):** paid plans — manual UPI or Razorpay/Telegram Payments auto-payments — can be added back later behind a plan gate (see the 2026-11-19 note at the top); instant 90%+ deal alerts (v2 — digest only for now); multi-plan pricing (no plans at all while the subscription is free). Vercel Hobby is non-commercial — if paid plans return, the project belongs on Vercel Pro.

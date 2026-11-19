@@ -10,7 +10,8 @@
  *   MIN_DISCOUNT=50, DIGEST_TOP_PER_STORE=5, DIGEST_HOUR_IST=9,
  *   BOT_MODE=polling, PORT=3000, DATABASE_PATH=./data/subscribers.db,
  *   WEBHOOK_URL='' (webhook mode only), FEED_URLS='' (blank = built-in 9-store list),
- *   TURSO_DATABASE_URL='' (blank = local file fallback), TURSO_AUTH_TOKEN=''
+ *   TURSO_DATABASE_URL='' (blank = local file fallback), TURSO_AUTH_TOKEN='',
+ *   CRON_SECRET='' (blank = only Vercel-cron calls accepted; see below)
  *
  * The subscription is free: there is no payment flow, no plan, no expiry.
  *
@@ -65,6 +66,12 @@ const config = {
   // Webhook mode only: public base URL, e.g. https://my-bot.onrender.com
   // (no trailing slash). The bot registers <WEBHOOK_URL>/telegram.
   webhookUrl: (process.env.WEBHOOK_URL || '').replace(/\/$/, ''),
+
+  // Cron auth (GitHub Actions trigger): shared secret for /api/cron-digest.
+  // Optional — blank = only Vercel-cron calls (x-vercel-cron header) are
+  // accepted. The same value must be set as the GitHub repo secret
+  // CRON_SECRET; created at deploy time, never committed.
+  cronSecret: process.env.CRON_SECRET || '',
 
   // Optional override for deal-feed URLs (comma-separated Store=url pairs).
   // Blank = built-in list of the 9 scanner repos' `feed` branches.

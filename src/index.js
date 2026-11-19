@@ -2,7 +2,7 @@
 
 // LOCAL-DEV ENTRY POINT ONLY.
 // Vercel does NOT use index.js — on Vercel the bot runs serverless via
-// api/webhook.js (Telegram webhook) + api/cron-digest.js (daily digest cron),
+// api/webhook.js (Telegram webhook) + api/cron-digest.js (15-min digest endpoint),
 // built by another worker. `npm run dev` / `npm start` here means polling
 // mode (BOT_MODE=polling, the default); webhook mode below is kept for a
 // 24/7 non-Vercel server only.
@@ -14,7 +14,7 @@ const { createBot } = require('./bot');
 
 // src/jobs.js (worker 2) exports startJobs(bot, db, config) -> { digestJob, stop() }.
 // In webhook mode startJobs schedules nothing (see jobs.js); the digest is
-// then triggered by the Vercel cron function calling runDigest.
+// then triggered by GitHub Actions calling the /api/cron-digest endpoint.
 const { startJobs } = require('./jobs');
 
 async function main() {

@@ -1,21 +1,25 @@
 # Deals Subscription Bot 🤖
 
-A Telegram bot that gives anyone a **free subscription** to a daily morning
-digest of the best PriceDrop Hunter deals (50%+ off) across Amazon, Blinkit,
+A Telegram bot that gives anyone a **free subscription** to a digest of
+the best PriceDrop Hunter deals (50%+ off) across Amazon, Blinkit,
 Flipkart Minutes, BigBasket, Zepto, Swiggy Instamart, Myntra, Croma and
-JioMart. No payment, no expiry — subscribe once and the digest
-arrives every morning at **9 AM IST**.
+JioMart. No payment, no expiry — subscribe once and fresh deals arrive
+**every 15 minutes**, with duplicates removed (a deal is never sent
+twice within 7 days).
 
 Hosting: **Vercel (free Hobby) + Turso (free)** — the bot runs as Vercel
-serverless functions (webhook for messages, Vercel Cron for the 9 AM
-digest) and subscribers live in a hosted Turso (SQLite) database. No
-server to manage, nothing sleeps.
+serverless functions (webhook for messages, digest endpoint), subscribers
+live in a hosted Turso (SQLite) database, and a **GitHub Actions
+workflow** calls the digest endpoint every 15 minutes (Vercel Hobby
+cron allows at most one run a day, so it cannot drive a 15-minute
+cadence). No server to manage, nothing sleeps.
 
-> ⚠️ **Honest status: not yet verified live.** There is no real Telegram
-> token, no live bot, no live Turso database and no live feed yet, so
-> nothing in this README has been tested against real Telegram or a real
-> Vercel deploy. Follow the local-test steps in (f) first, with a second
-> Telegram account, before you tell anyone the bot exists.
+> ⚠️ **Honest status: the bot is live, the feed is not.** The bot is
+> deployed at https://deals-subscription-bot.vercel.app with the webhook
+> connected and the 15-minute workflow ready — but no scanner `feed`
+> branch exists yet, so the live digest currently finds no deals and
+> sends nothing. Until the `scanner-patches/` are applied (see (i)),
+> test with `npm run digest:dry` (fixtures).
 
 ---
 
@@ -27,9 +31,11 @@ In plain words:
    welcome message with a **Subscribe** button.
 2. **They tap Subscribe — that is all.** The subscription is free: no
    payment and no expiry date.
-3. **Every morning at 9 AM IST** they get one digest message: the top 5
-   deals per store, only deals at 50% off or more, with the price, discount
-   and link.
+3. **Every 15 minutes** they get a digest message — but only when there
+   are new deals: the top 5 deals per store, only deals at 50% off or
+   more, with the price, discount and link. A deal already sent in the
+   last 7 days is never sent again, and if nothing new dropped since
+   the last run, nothing is sent at all (no empty "no deals" spam).
 4. **They can stop anytime** with `/stop` — the digest stops immediately.
    They can re-subscribe anytime with `/start` → Subscribe.
 5. **They can check their subscription** with `/status`.
@@ -106,9 +112,10 @@ file to the repo.
 | `ADMIN_ID` | Yes | — | Your Telegram user ID — send `/myid` to your bot — see (c) |
 | `TURSO_DATABASE_URL` | Yes on Vercel; no locally | — | Turso dashboard or CLI: `turso db show <name> --url` — see (g) |
 | `TURSO_AUTH_TOKEN` | Yes for a remote Turso DB | — | Turso CLI: `turso db tokens create <name>` — see (g) |
+| `CRON_SECRET` | Yes on Vercel; no locally | — | Shared secret that authorises the digest endpoint — create one value and set it in BOTH places: the Vercel env var `CRON_SECRET` AND the GitHub repo secret `CRON_SECRET` (repo → Settings → Secrets and variables → Actions). See (h) step 8 |
 | `MIN_DISCOUNT` | No | `50` | Only deals with ≥ this % off enter the digest |
 | `DIGEST_TOP_PER_STORE` | No | `5` | Max deals per store in one digest |
-| `DIGEST_HOUR_IST` | No | `9` | Hour (IST, 24-hour clock) the daily digest is sent (local polling mode; on Vercel the cron in `vercel.json` sets it — keep the two in sync) |
+| `DIGEST_HOUR_IST` | No | `9` | No longer drives the digest (kept for compatibility) — the digest runs every 15 minutes, triggered by GitHub Actions on Vercel and by a `*/15` cron in local polling mode |
 | `BOT_MODE` | No | `polling` | `polling` for local testing; `webhook` on Vercel |
 | `PORT` | No | `3000` | HTTP port in webhook mode. Vercel sets it — don't set it there |
 | `WEBHOOK_URL` | Only in webhook mode | — | Public base URL of your deployed bot, e.g. `https://deals-subscription-bot.vercel.app` (no trailing slash). The bot registers `<WEBHOOK_URL>/telegram` as its Telegram webhook |
@@ -194,9 +201,9 @@ free tier (5 GB, no card) is far more than this bot needs.
    write your subscriber list.
 
 > Turso free databases are archived after 10 days of inactivity — this
-> bot reads/writes the database every day (the 9 AM digest), so it stays
-> active. If you ever stop the bot for weeks, re-activate the database in
-> the Turso dashboard before restarting it.
+> bot reads/writes the database every 15 minutes (the digest + dedupe
+> writes), so it stays active. If you ever stop the bot for weeks,
+> re-activate the database in the Turso dashboard before restarting it.
 
 ---
 
@@ -213,6 +220,7 @@ free tier (5 GB, no card) is far more than this bot needs.
    - `ADMIN_ID` — from (c)
    - `TURSO_DATABASE_URL` — from (g)
    - `TURSO_AUTH_TOKEN` — from (g)
+   - `CRON_SECRET` — create one value, set it here AND as a GitHub repo secret (see step 8)
    - `BOT_MODE` = `webhook`
    - `WEBHOOK_URL` — see step 5 (leave it blank for the first deploy;
      the deploy works without it, the bot just can't receive messages yet)
@@ -221,22 +229,39 @@ free tier (5 GB, no card) is far more than this bot needs.
 5. Set `WEBHOOK_URL` to that domain (no trailing slash, no path) in the
    Vercel dashboard → **Settings → Environment Variables**, then
    **Deployments → ⋯ → Redeploy** so the new value takes effect.
-6. Register the webhook with Telegram — the bot does this itself on
-   first start in webhook mode, but verify it with a browser or curl:
+6. Register the webhook with Telegram — nothing in the code does this
+   on Vercel, so set it by opening this URL in a browser (replace
+   `<BOT_TOKEN>` and `<your-domain>` with the real values — never paste
+   the reply anywhere public):
+   ```
+   https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<your-domain>/api/webhook
+   ```
+   It should reply `{"ok":true,...}`. Then verify with:
    ```bash
    curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
    ```
-   The reply should show `"url": "https://<your-domain>/telegram"`.
-   (Replace `<BOT_TOKEN>` with the real token — never paste the reply
-   anywhere public.)
+   The reply should show `"url": "https://<your-domain>/api/webhook"`
+   (the serverless function route — NOT `/telegram`, which only exists
+   on the local webhook server).
 7. Message the bot `/start` from Telegram. If it replies, the webhook is
    live. If not, see troubleshooting (k).
-8. The daily digest is a **Vercel Cron** (`vercel.json` schedules
-   `/api/cron-digest` at `30 3 * * *` = 09:00 IST). On the Hobby plan a
-   cron runs at most once a day — this digest runs once a day, so it fits.
-   Check it in the Vercel dashboard → **Project → Cron Jobs** after the
-   first morning: the run should show `200` and a JSON body like
-   `{"ok":true,"sent":N,...}`.
+8. The digest runs **every 15 minutes via GitHub Actions**
+   (`.github/workflows/digest-15min.yml` — `*/15 * * * *` plus a manual
+   `workflow_dispatch`). It POSTs to
+   `https://<your-domain>/api/cron-digest` with the `CRON_SECRET` in the
+   `x-cron-secret` header. There is NO Vercel cron anymore (`vercel.json`
+   is `{}`) because Vercel Hobby allows at most one cron run per day.
+   Before the workflow can succeed, set `CRON_SECRET` to the SAME value
+   in both places: (1) the Vercel env var (step 3, then redeploy),
+   (2) the GitHub repo secret (repo → Settings → Secrets and variables
+   → Actions → New repository secret, name `CRON_SECRET`). Until both
+   match, the workflow's calls return 401 and nothing is sent. Verify
+   with a manual run: repo → Actions → "Digest (every 15 min)" → Run
+   workflow — it should finish green; the Vercel function logs for
+   `/api/cron-digest` should show 200 and a JSON body like
+   `{"ok":true,"sent":N,...}`. (The endpoint also accepts Vercel's own
+   `x-vercel-cron` header, so it keeps working if a Vercel cron is ever
+   re-added.)
 
 > **Vercel Hobby is non-commercial use only.** That is fine while the
 > subscription is free. If paid plans ever come back, Vercel expects the
@@ -245,18 +270,26 @@ free tier (5 GB, no card) is far more than this bot needs.
 
 ---
 
-## (i) How the daily digest gets its deals (the feed-branch design)
+## (i) How the 15-minute digest gets its deals (the feed-branch design)
 
 Each of the 9 PriceDrop Hunter scanner repos publishes its latest deals as
-a JSON file, and the bot fetches those files every morning — it does **not**
+a JSON file, and the bot fetches those files every 15 minutes — it does **not**
 run the scanners itself.
 
 - Each scanner repo has a GitHub workflow (`deals-feed.yml`) that runs the
   scanner and **commits `deals.json` to a `feed` branch** in that repo.
 - The bot fetches the 9 raw files, filters to deals at or above
   `MIN_DISCOUNT` (default 50%), keeps the top `DIGEST_TOP_PER_STORE`
-  (default 5) per store, and sends one digest at 9 AM IST (Vercel Cron;
-  local polling mode uses the `DIGEST_HOUR_IST` setting instead).
+  (default 5) per store, then drops any deal already sent in the last
+  7 days (see dedupe below) and sends only the new ones. If nothing is
+  new, it sends nothing at all that run.
+- **Dedupe (7 days):** every sent deal is recorded in the Turso
+  `posted_deals` table (key = store + deal URL, or store + title +
+  price when there is no URL). A deal sent within the last 7 days is
+  never sent again; after 7 days it may be sent again if it is still
+  live. Keys are marked only after at least one subscriber actually
+  received the digest, so a failed run never burns deals. `npm run
+  digest:dry` prints what would be sent and never touches this table.
 - The feed-publishing workflow and any per-repo patches live in the
   **`scanner-patches/`** directory of this repo. They are **staged diffs
   only — not yet applied** to the scanner repos, so no `feed` branch
@@ -281,7 +314,7 @@ run the scanners itself.
   testing one store, or pointing at a different branch.
 - **If a store's feed is stale or missing** (its workflow failed, or the
   `feed` branch was never created), that store is simply skipped in that
-  morning's digest — the other stores still go out. Check the Vercel
+  run's digest — the other stores still go out. Check the Vercel
   function logs for a fetch error naming the store.
 
 > Status: **not yet verified live.** No `feed` branch exists yet, so the
@@ -322,14 +355,14 @@ pays, nothing expires, and there are no approvals.
 
 | Problem | What to check |
 |---|---|
-| **Bot does not reply to `/start`** | Vercel dashboard → Deployments → the latest deployment → **Functions** logs: is there an error on `/api/webhook`? First suspects: a wrong `BOT_TOKEN` (copy it again from @BotFather), a missing required env var (the log says `Missing required env var: ...`), or `WEBHOOK_URL` still blank / wrong (see step (h)5–6 — run `getWebhookInfo` and check the URL is `https://<your-domain>/telegram`). Also: did you message the right bot username? Locally: is `node src/index.js` still running with no error? |
+| **Bot does not reply to `/start`** | Vercel dashboard → Deployments → the latest deployment → **Functions** logs: is there an error on `/api/webhook`? First suspects: a wrong `BOT_TOKEN` (copy it again from @BotFather), a missing required env var (the log says `Missing required env var: ...`), or `WEBHOOK_URL` still blank / wrong (see step (h)5–6 — run `getWebhookInfo` and check the URL is `https://<your-domain>/api/webhook`). Also: did you message the right bot username? Locally: is `node src/index.js` still running with no error? |
 | **Bot worked, then stopped replying** | Vercel: did the latest deploy fail, or did an env var change without a redeploy? (Env changes need a redeploy to take effect.) Check the Functions logs for the last `/api/webhook` call. Telegram retries undelivered updates for a while, then drops them — a deploy that was down for hours may need a fresh `/start` from the user. |
 | **Webhook vs polling confusion** | Only ONE mode may be active. `BOT_MODE=polling` = the bot fetches updates itself; correct locally, **wrong on Vercel** (a serverless function cannot hold a polling connection). `BOT_MODE=webhook` = Telegram pushes updates to `WEBHOOK_URL`; correct on Vercel. If you switch modes, delete the old webhook first: with polling the bot sets no webhook; with webhook the bot registers `<WEBHOOK_URL>/telegram`. A bot stuck in the wrong mode usually shows as "replies sometimes / never" — check `BOT_MODE` and `WEBHOOK_URL` in the Vercel dashboard, redeploy, and test `/start` again. |
-| **Digest didn't arrive at 9 AM** | (1) Vercel dashboard → Cron Jobs: did `/api/cron-digest` run at 03:30 UTC? A non-200 run means the function errored — open its logs. (2) Are the feeds fresh — open one feed URL from (i) in a browser; a 404 or days-old file means the scanner workflow for that store isn't publishing. (3) Is the subscriber still subscribed (did they send `/stop`)? (4) Hobby cron runs at most once a day — the digest is once a day, so that limit is not the cause. |
+| **Digest didn't arrive / nothing in 15 min** | (1) GitHub repo → Actions → "Digest (every 15 min)": did the latest run finish green? A 401 means `CRON_SECRET` differs between Vercel and the repo secret (or one side is blank) — set both to the same value and redeploy Vercel. A non-200 run means the function errored — open its Vercel logs. (2) Are the feeds fresh — open one feed URL from (i) in a browser; a 404 or days-old file means the scanner workflow for that store isn't publishing (and with no live feed the digest correctly sends nothing). (3) Is the subscriber still subscribed (did they send `/stop`)? (4) Dedupe: if the only live deals were already sent in the last 7 days, nothing is sent — that is correct behaviour, not a failure. |
 | **Admin commands don't work (`/subscribers`, `/broadcast`)** | Check `ADMIN_ID` in the Vercel env vars — it must be *your* numeric Telegram ID (from `/myid`), not your @username and not the bot's ID. Redeploy after changing it. Also confirm you are messaging from the same account that owns that ID. |
 | **"Missing required env var" on start** | A required variable is blank — in `.env` (local) or in the Vercel dashboard (deployed). On Vercel, `BOT_MODE=webhook` additionally requires `TURSO_DATABASE_URL` (and a token for a remote Turso URL). Fill the blanks in and redeploy. |
 | **Turso errors (`401`, `failed to connect`, `database not found`)** | The URL or token is wrong, or the database was archived after 10 idle days (see (g)). Re-copy the URL from `turso db show <name> --url` and mint a fresh token with `turso db tokens create <name>`, update the Vercel env vars, redeploy. |
-| **Cron run times out** | The digest (9 feed fetches + one send per subscriber) should fit Vercel's default function limit, but if a run ever times out, add `"functions": {"api/cron-digest.js": {"maxDuration": 60}}` to `vercel.json` and redeploy. |
+| **Digest run times out** | The digest (9 feed fetches + one send per subscriber) should fit Vercel's default function limit, but if a run ever times out, the workflow's curl has a 300 s cap; add `"functions": {"api/cron-digest.js": {"maxDuration": 60}}` to `vercel.json` and redeploy. |
 
 ---
 
@@ -342,8 +375,8 @@ pays, nothing expires, and there are no approvals.
   the project commercial, and Vercel Hobby is non-commercial — that would
   mean moving to Vercel Pro (see (h)).
 - **No instant alerts.** There is no "ping me the second a 90%+ deal
-  drops" feature — only the once-a-day 9 AM digest. Instant 90%+ alerts
-  are a v2 feature.
+  drops" feature — only the every-15-minutes digest (with 7-day dedupe).
+  Instant 90%+ alerts are a v2 feature.
 - **No admin dashboard / web UI.** Subscriber management is the Turso
   database + the bot's admin commands (see (j)).
 - **No per-store subscriptions** (e.g. "only Amazon"). Everyone gets all
@@ -355,10 +388,12 @@ pays, nothing expires, and there are no approvals.
 
 | File | What it is |
 |---|---|
-| `src/index.js` | Entry point for local dev / polling — wires the bot + the daily digest job (NOT used on Vercel) |
+| `src/index.js` | Entry point for local dev / polling — wires the bot + the 15-min digest job (NOT used on Vercel) |
 | `src/bot.js`, `src/config.js`, `src/db.js`, `src/digest.js`, `src/feed.js`, `src/jobs.js` | Bot, config, Turso database layer, digest, feed fetching, scheduler |
-| `api/_bot.js`, `api/webhook.js`, `api/cron-digest.js` | Vercel serverless functions: shared lazy bot, Telegram webhook receiver, daily digest cron |
-| `vercel.json` | Vercel Cron: `/api/cron-digest` daily at 03:30 UTC (= 09:00 IST) |
+| `src/dedupe.js` | Deal keys + 7-day dedupe filter (`posted_deals`) used by `runDigest` |
+| `api/_bot.js`, `api/webhook.js`, `api/cron-digest.js` | Vercel serverless functions: shared lazy bot, Telegram webhook receiver, 15-min digest endpoint (called by GitHub Actions, gated on `CRON_SECRET`) |
+| `vercel.json` | No crons (`{}`) — the digest is triggered by GitHub Actions, not a Vercel cron (Hobby allows one run/day) |
+| `.github/workflows/digest-15min.yml` | GitHub Actions: POSTs to `/api/cron-digest` every 15 min (`*/15 * * * *`) + manual dispatch, secret via `x-cron-secret` header |
 | `.env.example` | Env template — copy to `.env` locally, never commit a real `.env` |
 | `fixtures/deals.json` | Sample deals for tests and the dry-run digest |
 | `tests/` | Automated tests (`npm test`) |
@@ -366,7 +401,4 @@ pays, nothing expires, and there are no approvals.
 | `REPORT.md` | Build report: architecture, decisions, verification evidence |
 | `scanner-patches/` | Feed-publishing patches for the 9 scanner repos (staged diffs, not yet applied) |
 
-*Last updated: 2026-11-19 — hosting is Vercel + Turso (free); Render and
-Oracle/systemd deploy paths removed. Nothing in this README has been
-verified against live Telegram or a live Vercel deploy — see the notice at
-the top.*
+*Last updated: 2026-11-19 — digest is every 15 minutes via GitHub Actions (Vercel cron removed), with 7-day dedupe and a redesigned message; /start and /help list all 9 stores. The bot is deployed and the webhook is verified live; the digest sends nothing until the scanner feed branches exist — see the notice at the top.*

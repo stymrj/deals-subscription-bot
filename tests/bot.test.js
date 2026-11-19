@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { initDb } = require('../src/db');
-const { createBot } = require('../src/bot');
+const { createBot, nextDigestLabel } = require('../src/bot');
+const { STORE_ORDER } = require('../src/feed');
 
 const ADMIN_ID = 999;
 const USER_ID = 111;
@@ -346,4 +347,94 @@ test('/help has no price and points at /status', async () => {
   assert.ok(reply);
   assert.match(reply.text, /\/status/);
   assert.ok(!/₹/i.test(reply.text), 'help must not mention price: ' + reply.text);
+});
+
+test('/start and /help each list all 9 stores (one shared list, no drift)', async () => {
+  assert.equal(STORE_ORDER.length, 9, 'canonical store list must have 9 stores');
+  const { bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
+  const startReply = telegram.calls.find((c) => c.method === 'sendMessage');
+  assert.ok(startReply, 'expected a /start reply');
+  for (const store of STORE_ORDER) {
+    assert.ok(startReply.text.includes(store), `/start must list ${store}: ` + startReply.text);
+  }
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/help'));
+  const helpReply = telegram.calls.at(-1);
+  assert.ok(helpReply, 'expected a /help reply');
+  for (const store of STORE_ORDER) {
+    assert.ok(helpReply.text.includes(store), `/help must list ${store}: ` + helpReply.text);
+  }
+});
+
+test('cadence copy: welcome/help/subscribe/status say every 15 minutes, no 9 AM / morning / daily left', async () => {
+  const { bot, telegram } = await setup();
+  const stale = /9 AM|every morning|daily digest|Daily Digest|Daily Deals/i;
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
+  let reply = telegram.calls.find((c) => c.method === 'sendMessage');
+  assert.match(reply.text, /every 15 minutes/i, 'welcome must state the 15-minute cadence');
+  assert.match(reply.text, /50%\+ off/i, 'welcome must state 50%+ off');
+  assert.match(reply.text, /duplicates removed/i, 'welcome must state duplicates are removed');
+  assert.ok(!stale.test(reply.text), 'welcome has stale daily copy: ' + reply.text);
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/help'));
+  reply = telegram.calls.at(-1);
+  assert.match(reply.text, /every 15 minutes/i, 'help must state the 15-minute cadence');
+  assert.ok(!stale.test(reply.text), 'help has stale daily copy: ' + reply.text);
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
+  reply = telegram.calls.find((c) => c.method === 'sendMessage' && /subscribed/i.test(c.text || ''));
+  assert.ok(reply, 'expected a subscribe confirmation');
+  assert.match(reply.text, /every 15 minutes/i, 'subscribe reply must state the 15-minute cadence');
+  assert.ok(!stale.test(reply.text), 'subscribe reply has stale daily copy: ' + reply.text);
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
+  reply = telegram.calls.at(-1);
+  assert.match(reply.text, /every 15 minutes/i, 'status must state the 15-minute cadence');
+  assert.ok(!stale.test(reply.text), 'status has stale daily copy: ' + reply.text);
+
+  // A subscribed user's photo reply also carries the new cadence.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(photoUpdate(USER_ID));
+  reply = telegram.find((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
+  assert.match(reply.text, /every 15 minutes/i, 'photo reply must state the 15-minute cadence');
+  assert.ok(!stale.test(reply.text), 'photo reply has stale daily copy: ' + reply.text);
+});
+
+/** Minutes after IST midnight parsed out of a nextDigestLabel string. */
+function labelMinutesIst(label) {
+  const m = label.match(/(\d{1,2}):(\d{2})\s*(am|pm)/i);
+  assert.ok(m, 'label must carry an IST time: ' + label);
+  let hour = Number(m[1]) % 12;
+  if (m[3].toLowerCase() === 'pm') hour += 12;
+  return hour * 60 + Number(m[2]);
+}
+
+test('nextDigestLabel lands on a 15-minute IST boundary (incl. midnight rollover)', () => {
+  // 12:37:00Z = 18:07 IST -> next boundary 18:15.
+  let label = nextDigestLabel(Date.parse('2026-11-19T12:37:00Z'), 9);
+  assert.equal(labelMinutesIst(label) % 15, 0, 'not a 15-minute boundary: ' + label);
+  assert.match(label, /6:15 pm/, 'expected 6:15 pm next: ' + label);
+  assert.match(label, /19 Nov 2026/, 'expected same-day label: ' + label);
+
+  // Exactly on a boundary (18:15 IST) -> the following one, 18:30.
+  label = nextDigestLabel(Date.parse('2026-11-19T12:45:00Z'), 9);
+  assert.match(label, /6:30 pm/, 'exact boundary must roll to the next one: ' + label);
+
+  // 18:52:00Z = 00:22 IST next day -> 00:30, rolling the date forward.
+  label = nextDigestLabel(Date.parse('2026-11-19T18:52:00Z'), 9);
+  assert.equal(labelMinutesIst(label), 30, 'expected 00:30: ' + label);
+  assert.match(label, /20 Nov 2026/, 'expected next-day label: ' + label);
+
+  // The old digest hour is ignored: same input, different hour, same label.
+  assert.equal(
+    nextDigestLabel(Date.parse('2026-11-19T12:37:00Z'), 9),
+    nextDigestLabel(Date.parse('2026-11-19T12:37:00Z'), 21),
+    'digestHourIst must not move the next 15-minute boundary'
+  );
 });

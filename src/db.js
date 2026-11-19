@@ -10,6 +10,9 @@ const fs = require('fs');
  * Tables:
  *   subscribers(user_id INTEGER PRIMARY KEY, name TEXT, username TEXT,
  *     status TEXT ('active'|'expired'), created_at INTEGER)
+ *   posted_deals(deal_key TEXT PRIMARY KEY, store TEXT, title TEXT,
+ *     posted_at INTEGER) — digest dedupe: keys of deals already sent,
+ *     posted_at is epoch ms (see getRecentPostedKeys / markPosted).
  *
  * The subscription is free: there is no plan, no expiry and no payments
  * table. A fresh row (e.g. created by /start alone) starts as 'expired' —
@@ -64,6 +67,12 @@ async function initDb(url, authToken) {
       username TEXT,
       status TEXT,
       created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS posted_deals (
+      deal_key TEXT PRIMARY KEY,
+      store TEXT,
+      title TEXT,
+      posted_at INTEGER
     );
   `);
 
@@ -120,6 +129,39 @@ async function initDb(url, authToken) {
         "SELECT * FROM subscribers WHERE status = 'active' ORDER BY created_at ASC"
       );
       return res.rows.map(normalizeRow);
+    },
+
+    /**
+     * Dedupe: deal_keys posted at/after sinceMs (epoch ms). Returns a Set.
+     * runDigest passes now - DEDUPE_WINDOW_MS (7 days) so only recent
+     * sends suppress a re-send.
+     */
+    async getRecentPostedKeys(sinceMs) {
+      const res = await client.execute({
+        sql: 'SELECT deal_key FROM posted_deals WHERE posted_at >= ?',
+        args: [sinceMs],
+      });
+      return new Set(res.rows.map(r => r.deal_key));
+    },
+
+    /**
+     * Dedupe: record sent deals. entries: [{deal_key, store, title,
+     * posted_at}] with posted_at as epoch ms.
+     * INSERT OR REPLACE (not IGNORE): re-marking a deal that was re-sent
+     * after its window expired refreshes posted_at, so its 7-day window
+     * restarts from the latest send. IGNORE would keep the stale
+     * first-send time and let the deal re-send on every run once the
+     * window had expired.
+     */
+    async markPosted(entries) {
+      for (const e of entries || []) {
+        await client.execute({
+          sql: `INSERT OR REPLACE INTO posted_deals
+                  (deal_key, store, title, posted_at)
+                VALUES (?, ?, ?, ?)`,
+          args: [e.deal_key, e.store ?? null, e.title ?? null, e.posted_at],
+        });
+      }
     },
 
     async close() {

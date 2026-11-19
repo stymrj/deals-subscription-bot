@@ -1,6 +1,7 @@
 'use strict';
 
 const { Telegraf, Markup } = require('telegraf');
+const { STORE_ORDER } = require('./feed');
 
 const IST = 'Asia/Kolkata';
 
@@ -12,18 +13,28 @@ function fmtDateTimeIst(epochMs) {
 }
 
 /**
- * Next digest time (9 AM IST by default) as a human-readable IST string.
- * If it is before the digest hour today, the first digest is today;
- * otherwise it is tomorrow.
+ * Next digest time as a human-readable IST string: the next 15-minute
+ * boundary strictly after nowMs (digests run every 15 minutes, not once
+ * a day at a fixed hour — so an exact-boundary now shows the following
+ * boundary, the update for the current one already being sent).
+ * digestHourIst is ignored — kept in the signature so existing callers
+ * (statusText, subscribe reply) need no change.
  */
-function nextDigestLabel(nowMs, digestHourIst) {
+function nextDigestLabel(nowMs, _digestHourIst) {
   const istNow = new Date(nowMs + 5.5 * 60 * 60 * 1000); // shift to IST wall clock
+  const mins = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
+  const next = (Math.floor(mins / 15) + 1) * 15; // minutes after IST midnight; may pass 1440
   const target = new Date(istNow);
-  target.setUTCHours(digestHourIst, 0, 0, 0);
-  if (istNow.getTime() >= target.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+  target.setUTCHours(0, next, 0, 0); // overflow past midnight rolls the date forward
   // target is a UTC-shifted date; convert back to a real epoch ms.
   const targetEpoch = target.getTime() - 5.5 * 60 * 60 * 1000;
   return fmtDateTimeIst(targetEpoch);
+}
+
+// The one shared store list: /start and /help both render from STORE_ORDER
+// (src/feed.js) so the two messages can never drift apart.
+function storeListText() {
+  return STORE_ORDER.map((s) => `• ${s}`).join('\n');
 }
 
 function displayName(from) {
@@ -57,11 +68,9 @@ function createBot({ config, store }) {
   const adminId = config.adminId;
 
   const welcomeText = () =>
-    `👋 Welcome to PriceDrop Hunter — Daily Deals Digest!\n\n` +
-    `Get the top deals (50%+ off) from all 9 stores — Amazon, Flipkart, ` +
-    `Blinkit, Zepto, Swiggy Instamart, BigBasket, Myntra, Croma and JioMart — ` +
-    `in one message every morning at 9 AM IST.\n\n` +
-    `🆓 Free subscription — no payment, no expiry. Just tap Subscribe below.\n\n` +
+    `👋 Welcome to PriceDrop Hunter!\n\n` +
+    `🆓 Free subscription — fresh deals every 15 minutes, only 50%+ off, duplicates removed.\n\n` +
+    `Stores we track:\n${storeListText()}\n\n` +
     `Tap below to get started:`;
 
   const startKeyboard = () =>
@@ -90,6 +99,7 @@ function createBot({ config, store }) {
       `📋 Your subscription\n\n` +
       `Free subscriber\n` +
       `Status: ${statusLabel}\n` +
+      `Fresh deals every 15 minutes · 50%+ off · duplicates removed\n` +
       `Next digest: ${nextDigestLabel(Date.now(), config.digestHourIst)}` +
       (subscribed
         ? ''
@@ -106,15 +116,15 @@ function createBot({ config, store }) {
 
   bot.help(async (ctx) => {
     await ctx.reply(
-      `PriceDrop Hunter — Daily Deals Digest\n\n` +
+      `PriceDrop Hunter — Fresh Deals\n\n` +
+        `🆓 Free subscription — fresh deals every 15 minutes, only 50%+ off, duplicates removed.\n\n` +
+        `Stores we track:\n${storeListText()}\n\n` +
         `/start — subscribe for free, or check status\n` +
         `/status — your subscription status and next digest time\n` +
         `/myid — your numeric Telegram id\n` +
-        `/stop — stop the daily digest\n` +
+        `/stop — stop the deal updates\n` +
         `/help — this help\n\n` +
-        `Admin: /subscribers, /broadcast <text>\n\n` +
-        `Free subscription — the digest arrives every morning at 9 AM IST ` +
-        `with the top 50%+ off deals from all 9 stores.`
+        `Admin: /subscribers, /broadcast <text>`
     );
   });
 
@@ -131,7 +141,7 @@ function createBot({ config, store }) {
     }
     await store.setStatus(ctx.from.id, 'expired');
     await ctx.reply(
-      'Your subscription is stopped — you will no longer receive the daily digest. ' +
+      'Your subscription is stopped — you will no longer receive the deal updates. ' +
       'Tap /start to subscribe again (free).'
     );
   });
@@ -185,7 +195,7 @@ function createBot({ config, store }) {
     await store.setStatus(ctx.from.id, 'active');
     await ctx.reply(
       `🎉 You're subscribed — for free!\n\n` +
-        `Your daily digest arrives every morning at 9 AM IST.\n` +
+        `Fresh deals arrive every 15 minutes.\n` +
         `Next digest: ${nextDigestLabel(Date.now(), config.digestHourIst)}.\n\n` +
         `Happy deal hunting! 🛒`,
       startKeyboard()
@@ -205,7 +215,7 @@ function createBot({ config, store }) {
   bot.on('photo', async (ctx) => {
     const sub = await ensureSubscriber(ctx);
     if (sub && sub.status === 'active') {
-      await ctx.reply("No payment needed — you're already subscribed for free, the digest arrives every morning at 9 AM IST.");
+      await ctx.reply("No payment needed — you're already subscribed for free, fresh deals arrive every 15 minutes.");
     } else {
       await ctx.reply('No payment needed — this bot is free. Tap /start and hit Subscribe.');
     }
@@ -242,4 +252,4 @@ function createBot({ config, store }) {
   return { bot, store, config, sendToSubscribers, notifyAdmin };
 }
 
-module.exports = { createBot };
+module.exports = { createBot, nextDigestLabel };
