@@ -1,0 +1,35 @@
+--- a/bot-v2/src/bot.js
++++ b/bot-v2/src/bot.js
+@@ -19,6 +19,7 @@
+ const { record } = require('./priceHistory');
+ const config = require('../config.json');
+ const DRY = process.argv.includes('--dry-run') || process.env.DRY_RUN === 'true';
++const JSON_MODE = process.argv.includes('--json');
+ const ROOT = path.join(__dirname, '..');
+ const sleep = ms => new Promise(r => setTimeout(r, ms));
+ const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+@@ -51,12 +52,23 @@
+       console.log(`[bot] ${camp.name} > ${sub.name}`);
+       let items = [];
+       try { items = await fetchSubcategory(cat, sub, store); } catch (e) { console.error(`[bot] ${sub.name} failed:`, e.message); }
+-      for (const p of items) if (p.disc >= Math.max(envMin, camp.minDiscount || config.minDiscount || 70) && p.inStock && !posted[p.id]) found.push(p);
++      for (const p of items) if (p.disc >= Math.max(envMin, camp.minDiscount || config.minDiscount || 70) && p.inStock && (JSON_MODE || !posted[p.id])) found.push(p);
+       await sleep(600 + Math.random() * 800);
+     }
+     console.log(`[bot] campaign ${key} done`);
+   }
+   found.sort((a, b) => b.disc - a.disc || b.save - a.save);
++  // --json feed mode: snapshot for the subscriber-bot digest. No dedupe
++  // filter (bypassed above), no price-history/dedupe writes, no Telegram.
++  // The JSON object is always the LAST stdout line; the workflow extracts
++  // it with `tail -n 1` (the [bot] log lines stay on stdout).
++  if (JSON_MODE) {
++    const deals = found.filter(p => p.disc >= envMin && p.inStock).slice(0, 20)
++      .map(p => ({ title: p.title, price: p.price, mrp: p.mrp, disc: Math.round(p.disc), url: p.url || '', cat: p.cat || '' }));
++    console.log(JSON.stringify({ store: 'Swiggy Instamart', generatedAt: new Date().toISOString(), deals }));
++    return;
++  }
++
+   for (const item of found) { const r = record(prices, item.id, item.price); item.prevPrice = r.previous; item.isDrop = r.isDrop; item.lowestEver = r.isLowestEver; }
+   if (DRY) console.log('[dry-run] price history not saved'); else saveJson('prices.json', prices);
+   console.log(`[bot] ${found.length} new deals`);

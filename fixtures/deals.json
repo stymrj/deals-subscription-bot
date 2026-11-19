@@ -1,0 +1,307 @@
+{
+    "Amazon Now": [
+        {
+            "cat": "Grocery \u203a Oils",
+            "disc": 55,
+            "mrp": 199,
+            "price": 89,
+            "title": "Fortune Sunflower Oil 1L",
+            "url": "https://www.amazon.in/dp/B07XYZ1234"
+        },
+        {
+            "cat": "Grocery \u203a Atta",
+            "disc": 51,
+            "mrp": 799,
+            "price": 389,
+            "title": "Aashirvaad Shudh Chakki Atta 10kg",
+            "url": "https://www.amazon.in/dp/B08ABC5678"
+        },
+        {
+            "cat": "Grocery \u203a Salt",
+            "disc": 53,
+            "mrp": 38,
+            "price": 18,
+            "title": "Tata Salt Iodised 1kg",
+            "url": "https://www.amazon.in/dp/B09DEF9012"
+        },
+        {
+            "cat": "Grocery \u203a Noodles",
+            "disc": 52,
+            "mrp": 228,
+            "price": 109,
+            "title": "Maggi 2-Minute Noodles 12-Pack",
+            "url": "https://www.amazon.in/dp/B07GHI3456"
+        },
+        {
+            "cat": "Personal Care \u203a Soap",
+            "disc": 50,
+            "mrp": 299,
+            "price": 149,
+            "title": "Dove Cream Beauty Bathing Bar 4x100g",
+            "url": "https://www.amazon.in/dp/B06JKL7890"
+        }
+    ],
+    "BigBasket": [
+        {
+            "cat": "Fruits & Vegetables \u203a Onion",
+            "disc": 60,
+            "mrp": 249,
+            "price": 99,
+            "title": "Fresho Onion 5kg",
+            "url": "https://www.bigbasket.com/pd/10000148/fresho-onion-5-kg"
+        },
+        {
+            "cat": "Grocery \u203a Atta",
+            "disc": 50,
+            "mrp": 399,
+            "price": 199,
+            "title": "Aashirvaad Shudh Chakki Atta 5kg",
+            "url": "https://www.bigbasket.com/pd/10000203/aashirvaad-atta-5-kg"
+        },
+        {
+            "cat": "Dairy \u203a Butter",
+            "disc": 50,
+            "mrp": 499,
+            "price": 249,
+            "title": "Amul Salted Butter 500g",
+            "url": "https://www.bigbasket.com/pd/10000314/amul-butter-500-g"
+        },
+        {
+            "cat": "Cleaning \u203a Detergent",
+            "disc": 50,
+            "mrp": 1599,
+            "price": 799,
+            "title": "Surf Excel Easy Wash Detergent 4kg",
+            "url": "https://www.bigbasket.com/pd/10000425/surf-excel-4-kg"
+        },
+        {
+            "cat": "Personal Care \u203a Shampoo",
+            "disc": 63,
+            "mrp": 799,
+            "price": 299,
+            "title": "Head & Shoulders Smooth & Silky Shampoo 650ml",
+            "url": "https://www.bigbasket.com/pd/10000536/head-shoulders-650-ml"
+        }
+    ],
+    "Blinkit": [
+        {
+            "cat": "Grocery \u203a Ghee",
+            "disc": 50,
+            "mrp": 999,
+            "price": 499,
+            "title": "Amul Ghee 1L Tin",
+            "url": "https://blinkit.com/prn/amul-ghee-1-l/prid/12345"
+        },
+        {
+            "cat": "Grocery \u203a Oils",
+            "disc": 55,
+            "mrp": 1099,
+            "price": 499,
+            "title": "Fortune Refined Oil 5L Jar",
+            "url": "https://blinkit.com/prn/fortune-oil-5-l/prid/23456"
+        },
+        {
+            "cat": "Personal Care \u203a Oral Care",
+            "disc": 50,
+            "mrp": 199,
+            "price": 99,
+            "title": "Colgate MaxFresh Toothpaste 200g",
+            "url": "https://blinkit.com/prn/colgate-200-g/prid/34567"
+        },
+        {
+            "cat": "Grocery \u203a Biscuits",
+            "disc": 48,
+            "mrp": 125,
+            "price": 65,
+            "title": "Parle-G Gold Biscuits 800g",
+            "url": "https://blinkit.com/prn/parle-g-800-g/prid/45678"
+        }
+    ],
+    "Croma": [],
+    "Flipkart Minutes": [
+        {
+            "cat": "Electronics \u203a Chargers",
+            "disc": 62,
+            "mrp": 1299,
+            "price": 499,
+            "title": "Samsung 25W Travel Adapter (Type-C)",
+            "url": "https://www.flipkart.com/samsung-25w-adapter/p/itm1234567890"
+        },
+        {
+            "cat": "Electronics \u203a Earbuds",
+            "disc": 70,
+            "mrp": 2999,
+            "price": 899,
+            "title": "boAt Airdopes 141 TWS Earbuds",
+            "url": "https://www.flipkart.com/boat-airdopes-141/p/itm2345678901"
+        },
+        {
+            "cat": "Home \u203a Bottles",
+            "disc": 58,
+            "mrp": 599,
+            "price": 249,
+            "title": "Milton Thermosteel Flip Lid Bottle 1L",
+            "url": "https://www.flipkart.com/milton-bottle-1-l/p/itm3456789012"
+        },
+        {
+            "cat": "Fashion \u203a Socks",
+            "disc": 60,
+            "mrp": 499,
+            "price": 199,
+            "title": "Puma Unisex Ankle Socks (Pack of 3)",
+            "url": "https://www.flipkart.com/puma-socks-3-pack/p/itm4567890123"
+        }
+    ],
+    "JioMart": [
+        {
+            "cat": "Cooking Essentials",
+            "disc": 55,
+            "mrp": 199,
+            "price": 89,
+            "title": "Good Life Toor Dal 1kg",
+            "url": "https://www.jiomart.com/product/good-life-toor-dal-1-kg/490001234"
+        },
+        {
+            "cat": "Cooking Essentials",
+            "disc": 56,
+            "mrp": 449,
+            "price": 199,
+            "title": "Good Life Sugar 5kg",
+            "url": "https://www.jiomart.com/product/good-life-sugar-5-kg/490002345"
+        },
+        {
+            "cat": "Biscuits Drinks Packaged Foods",
+            "disc": 50,
+            "mrp": 239,
+            "price": 119,
+            "title": "Maggi 2-Minute Masala Noodles 12-Pack",
+            "url": "https://www.jiomart.com/product/maggi-noodles-12-pack/490003456"
+        },
+        {
+            "cat": "Home",
+            "disc": 50,
+            "mrp": 179,
+            "price": 89,
+            "title": "Vim Dishwash Bar 3x200g",
+            "url": "https://www.jiomart.com/product/vim-bar-3-pack/490004567"
+        },
+        {
+            "cat": "Cooking Essentials",
+            "disc": 54,
+            "mrp": 649,
+            "price": 299,
+            "title": "Good Life Sonamasoori Rice 5kg",
+            "url": "https://www.jiomart.com/product/good-life-rice-5-kg/490005678"
+        }
+    ],
+    "Myntra": [
+        {
+            "cat": "Fashion \u203a T-Shirts",
+            "disc": 95,
+            "mrp": 999,
+            "price": 49,
+            "title": "Roadster Men Pure Cotton T-Shirt",
+            "url": "https://www.myntra.com/tshirts/roadster/roadster-men-t-shirt/12345678/buy"
+        },
+        {
+            "cat": "Fashion \u203a Shoes",
+            "disc": 73,
+            "mrp": 2999,
+            "price": 799,
+            "title": "HRX Men Running Shoes",
+            "url": "https://www.myntra.com/sports-shoes/hrx/hrx-men-shoes/23456789/buy"
+        },
+        {
+            "cat": "Fashion \u203a Jeans",
+            "disc": 67,
+            "mrp": 2999,
+            "price": 999,
+            "title": "Levi's Men 511 Slim Fit Jeans",
+            "url": "https://www.myntra.com/jeans/levis/levis-men-511-jeans/34567890/buy"
+        },
+        {
+            "cat": "Fashion \u203a Dresses",
+            "disc": 70,
+            "mrp": 1999,
+            "price": 599,
+            "title": "DressBerry Women Floral Dress",
+            "url": "https://www.myntra.com/dresses/dressberry/dressberry-women-dress/45678901/buy"
+        },
+        {
+            "cat": "Fashion \u203a Caps",
+            "disc": 70,
+            "mrp": 999,
+            "price": 299,
+            "title": "Puma Unisex Baseball Cap",
+            "url": "https://www.myntra.com/caps/puma/puma-unisex-cap/56789012/buy"
+        },
+        {
+            "cat": "Electronics \u203a Smartwatches",
+            "disc": 70,
+            "mrp": 3995,
+            "price": 1199,
+            "title": "Fastrack Reflex Vybe Smartwatch",
+            "url": "https://www.myntra.com/smart-watches/fastrack/fastrack-reflex-vybe/67890123/buy"
+        }
+    ],
+    "Swiggy Instamart": [
+        {
+            "cat": "Daily Fresh Produce \u203a Fresh Vegetables",
+            "disc": 61,
+            "mrp": 49,
+            "price": 19,
+            "title": "Onion 1kg",
+            "url": "https://www.swiggy.com/instamart/search?custom_back=true&query=Onion%201kg"
+        },
+        {
+            "cat": "Daily Fresh Produce \u203a Fresh Fruits",
+            "disc": 58,
+            "mrp": 69,
+            "price": 29,
+            "title": "Banana Robusta 1 Dozen",
+            "url": "https://www.swiggy.com/instamart/search?custom_back=true&query=Banana%20Robusta"
+        },
+        {
+            "cat": "Grocery Staples \u203a Bread",
+            "disc": 55,
+            "mrp": 55,
+            "price": 25,
+            "title": "Britannia Milk Bread 400g",
+            "url": "https://www.swiggy.com/instamart/search?custom_back=true&query=Britannia%20Milk%20Bread"
+        }
+    ],
+    "Zepto": [
+        {
+            "cat": "Atta, Rice, Oil & Dals \u203a Atta",
+            "disc": 53,
+            "mrp": 95,
+            "price": 45,
+            "title": "Aashirvaad Shudh Chakki Atta 1kg",
+            "url": "https://www.zepto.com/pn/aashirvaad-atta-1-kg/pvid/111111"
+        },
+        {
+            "cat": "Atta, Rice, Oil & Dals \u203a Tea",
+            "disc": 56,
+            "mrp": 449,
+            "price": 199,
+            "title": "Tata Tea Gold 500g",
+            "url": "https://www.zepto.com/pn/tata-tea-gold-500-g/pvid/222222"
+        },
+        {
+            "cat": "Atta, Rice, Oil & Dals \u203a Dals",
+            "disc": 52,
+            "mrp": 115,
+            "price": 55,
+            "title": "Fortune Besan 1kg",
+            "url": "https://www.zepto.com/pn/fortune-besan-1-kg/pvid/333333"
+        },
+        {
+            "cat": "Blockbuster Deals \u203a Top Picks",
+            "disc": 56,
+            "mrp": 799,
+            "price": 349,
+            "title": "Surf Excel Matic Front Load 2kg",
+            "url": "https://www.zepto.com/pn/surf-excel-matic-2-kg/pvid/444444"
+        }
+    ]
+}
