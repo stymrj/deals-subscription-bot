@@ -55,10 +55,14 @@ function makeTelegramView() {
   };
 }
 
-async function setup() {
+async function setup(fetchDealsStub) {
   apiCalls.length = 0;
   const store = await initDb(':memory:');
-  const { bot, sendToSubscribers, notifyAdmin } = createBot({ config: testConfig(), store });
+  const { bot, sendToSubscribers, notifyAdmin } = createBot({
+    config: testConfig(),
+    store,
+    fetchDeals: fetchDealsStub,
+  });
   bot.botInfo = { id: 1, is_bot: true, first_name: 'TestBot', username: 'testbot' };
   return { store, bot, telegram: makeTelegramView(), sendToSubscribers, notifyAdmin };
 }
@@ -437,4 +441,297 @@ test('nextDigestLabel lands on a 15-minute IST boundary (incl. midnight rollover
     nextDigestLabel(Date.parse('2026-11-19T12:37:00Z'), 21),
     'digestHourIst must not move the next 15-minute boundary'
   );
+});
+
+// ---------- Worker 3: /stores, /setdiscount, /deals, /top, /watch ----------
+
+const NO_DEALS_LINE =
+  'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.';
+
+const STUB_DEALS = {
+  'Amazon Now': [
+    { title: 'Headphones Pro', price: 999, mrp: 2999, disc: 67, url: 'https://example.com/hp', cat: '' },
+    { title: 'Cheap Cable', price: 199, mrp: 499, disc: 60, url: 'https://example.com/cable', cat: '' },
+  ],
+  Zepto: [
+    { title: 'Mixer Grinder', price: 1500, mrp: 5000, disc: 70, url: 'https://example.com/mixer', cat: '' },
+  ],
+  Blinkit: [
+    { title: 'Low Discount Snack', price: 90, mrp: 100, disc: 10, url: 'https://example.com/snack', cat: '' },
+  ],
+};
+
+function userMessages(telegram, userId) {
+  return telegram.calls.filter((c) => c.method === 'sendMessage' && c.chat_id === userId);
+}
+
+function lastUserMessage(telegram, userId) {
+  return userMessages(telegram, userId).at(-1);
+}
+
+function keyboardButtons(call) {
+  return (call.reply_markup?.inline_keyboard || []).flat();
+}
+
+test('/stores shows 9 toggle buttons (2 per row), all ✅ by default', async () => {
+  const { bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/stores'));
+  const reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply, 'expected a /stores reply');
+  for (const storeName of STORE_ORDER) {
+    assert.ok(reply.text.includes(`✅ ${storeName}`), `/stores must show ✅ ${storeName}: ` + reply.text);
+  }
+  assert.match(reply.text, /Tap a store to turn it on\/off/);
+  const buttons = keyboardButtons(reply);
+  assert.equal(buttons.length, 9, 'one toggle button per store');
+  for (let i = 0; i < 9; i++) {
+    assert.equal(buttons[i].callback_data, `store:toggle:${i}`, 'callback data must be store:toggle:<index>');
+    assert.equal(buttons[i].text, `✅ ${STORE_ORDER[i]}`);
+  }
+  const rows = reply.reply_markup.inline_keyboard;
+  assert.deepEqual(rows.map((r) => r.length), [2, 2, 2, 2, 1], 'two toggle buttons per row');
+});
+
+test('store toggle flips prefs AND edits the message; toggling back restores it', async () => {
+  const { store, bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/stores'));
+  telegram.calls.length = 0;
+
+  // Toggle Amazon Now (index 0) off.
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'store:toggle:0'));
+  assert.ok(
+    telegram.calls.some((c) => c.method === 'answerCallbackQuery'),
+    'toggle must answer the callback query'
+  );
+  const edit = telegram.calls.find((c) => c.method === 'editMessageText');
+  assert.ok(edit, 'toggle must EDIT the message (not send a new one)');
+  assert.ok(edit.text.includes('❌ Amazon Now'), 'edited text must show Amazon Now off: ' + edit.text);
+  assert.ok(edit.text.includes('✅ Blinkit'), 'edited text must keep other stores on: ' + edit.text);
+  const editButtons = keyboardButtons(edit);
+  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:0').text, '❌ Amazon Now');
+  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:1').text, '✅ Blinkit');
+  assert.deepEqual(
+    (await store.getUserPrefs(USER_ID)).stores,
+    STORE_ORDER.filter((s) => s !== 'Amazon Now'),
+    'prefs must drop the toggled store'
+  );
+
+  // Toggle it back on.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'store:toggle:0'));
+  const edit2 = telegram.calls.find((c) => c.method === 'editMessageText');
+  assert.ok(edit2, 'second toggle must edit again');
+  assert.ok(edit2.text.includes('✅ Amazon Now'), 'edited text must show Amazon Now on again: ' + edit2.text);
+  assert.deepEqual((await store.getUserPrefs(USER_ID)).stores, STORE_ORDER, 'prefs must be back to all 9');
+});
+
+test('/setdiscount valid (30) confirms + updates prefs; invalid leaves prefs unchanged', async () => {
+  const { store, bot, telegram } = await setup();
+
+  for (const bad of ['/setdiscount abc', '/setdiscount 5', '/setdiscount 95', '/setdiscount']) {
+    await bot.handleUpdate(messageUpdate(USER_ID, bad));
+    const reply = lastUserMessage(telegram, USER_ID);
+    assert.match(reply.text, /Usage: \/setdiscount <10-90>/, `${bad} must show the usage hint: ` + reply.text);
+    assert.match(reply.text, /Your current threshold is 50%/, 'usage hint must show the current threshold');
+    assert.equal((await store.getUserPrefs(USER_ID)).min_discount, 50, `${bad} must not change prefs`);
+  }
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/setdiscount 30'));
+  let reply = lastUserMessage(telegram, USER_ID);
+  assert.match(reply.text, /✅ Minimum discount set to 30%/);
+  assert.match(reply.text, /only include deals at 30% off or more/);
+  assert.equal((await store.getUserPrefs(USER_ID)).min_discount, 30);
+
+  // Out of range after a valid set: usage hint shows the new threshold, prefs untouched.
+  await bot.handleUpdate(messageUpdate(USER_ID, '/setdiscount 95'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.match(reply.text, /Usage: \/setdiscount <10-90>/);
+  assert.match(reply.text, /Your current threshold is 30%/);
+  assert.equal((await store.getUserPrefs(USER_ID)).min_discount, 30);
+});
+
+test('/status shows threshold, store count and watchlist count (command + status button)', async () => {
+  const { store, bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
+  let reply = lastUserMessage(telegram, USER_ID);
+  assert.match(reply.text, /Min\. discount: 50%/);
+  assert.match(reply.text, /Stores: 9 of 9 enabled/);
+  assert.match(reply.text, /Watchlist: 0 keyword\(s\)/);
+
+  // Change all three, then /status again.
+  await store.setUserMinDiscount(USER_ID, 30);
+  await store.setUserStores(USER_ID, STORE_ORDER.filter((s) => s !== 'Zepto'));
+  await store.addWatch(USER_ID, 'shoes');
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.match(reply.text, /Min\. discount: 30%/);
+  assert.match(reply.text, /Stores: 8 of 9 enabled/);
+  assert.match(reply.text, /Watchlist: 1 keyword\(s\)/);
+  assert.match(reply.text, /Fresh deals every 15 minutes · 30%\+ off/);
+
+  // The 'status' inline button shows the same three lines.
+  telegram.calls.length = 0;
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'status'));
+  reply = lastUserMessage(telegram, USER_ID);
+  assert.match(reply.text, /Min\. discount: 30%/);
+  assert.match(reply.text, /Stores: 8 of 9 enabled/);
+  assert.match(reply.text, /Watchlist: 1 keyword\(s\)/);
+});
+
+test('/deals returns matching deals for an unsubscribed user, honours prefs, writes no dedupe state', async () => {
+  const { store, bot, telegram } = await setup(async () => STUB_DEALS);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/deals'));
+
+  const replies = userMessages(telegram, USER_ID);
+  assert.equal(replies.length, 1, 'fixture deals must fit in one digest message');
+  assert.equal(replies[0].parse_mode, 'HTML');
+  const joined = replies.map((r) => r.text).join('\n');
+  assert.ok(joined.includes('Headphones Pro'), 'matching Amazon deal must be shown');
+  assert.ok(joined.includes('Cheap Cable'), 'second matching Amazon deal must be shown');
+  assert.ok(joined.includes('Mixer Grinder'), 'matching Zepto deal must be shown');
+  assert.ok(!joined.includes('Low Discount Snack'), 'below-threshold deal must be filtered out');
+  // No active-subscription gate: /deals works before subscribing.
+  assert.equal((await store.getSubscriber(USER_ID)).status, 'expired');
+  // No dedupe writes: nothing recorded as posted.
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0, '/deals must not mark deals posted');
+
+  // Disable Zepto in prefs: its deal disappears, Amazon deals stay.
+  await store.setUserStores(USER_ID, STORE_ORDER.filter((s) => s !== 'Zepto'));
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/deals'));
+  const joined2 = userMessages(telegram, USER_ID).map((r) => r.text).join('\n');
+  assert.ok(!joined2.includes('Mixer Grinder'), 'disabled-store deal must be filtered out');
+  assert.ok(joined2.includes('Headphones Pro'), 'enabled-store deal must still be shown');
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0, 'second /deals must still write no dedupe state');
+});
+
+test('/deals with empty feeds replies the polite one-liner exactly once, no dedupe state', async () => {
+  const { store, bot, telegram } = await setup(async () => ({}));
+  await bot.handleUpdate(messageUpdate(USER_ID, '/deals'));
+  const replies = userMessages(telegram, USER_ID);
+  assert.equal(replies.length, 1, 'empty feeds must produce exactly one reply');
+  assert.equal(replies[0].text, NO_DEALS_LINE);
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0);
+});
+
+test('/top returns the single best deal (highest disc) and writes no dedupe state', async () => {
+  const { store, bot, telegram } = await setup(async () => STUB_DEALS);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/top'));
+  const replies = userMessages(telegram, USER_ID);
+  assert.equal(replies.length, 1, '/top must send exactly one message');
+  assert.equal(replies[0].parse_mode, 'HTML');
+  assert.match(replies[0].text, /🏆 Top deal right now/);
+  assert.ok(replies[0].text.includes('Mixer Grinder'), 'best deal is the 70% Zepto one');
+  assert.ok(replies[0].text.includes('70% off'));
+  assert.ok(!replies[0].text.includes('Headphones Pro'), 'only the single best deal, not the rest');
+  assert.equal((await store.getRecentPostedKeys(0)).size, 0, '/top must not mark deals posted');
+});
+
+test('/top tie-breaks equal discounts by biggest saving; empty feeds get the one-liner', async () => {
+  const tied = {
+    'Amazon Now': [
+      { title: 'Big Saver', price: 100, mrp: 5100, disc: 70, url: 'https://example.com/big', cat: '' },
+    ],
+    Zepto: [
+      { title: 'Small Saver', price: 900, mrp: 1000, disc: 70, url: 'https://example.com/small', cat: '' },
+    ],
+  };
+  const { bot, telegram } = await setup(async () => tied);
+  await bot.handleUpdate(messageUpdate(USER_ID, '/top'));
+  let reply = lastUserMessage(telegram, USER_ID);
+  assert.ok(reply.text.includes('Big Saver'), 'equal disc must pick the bigger saving (₹5000 vs ₹100)');
+  assert.ok(!reply.text.includes('Small Saver'));
+
+  const empty = await setup(async () => ({}));
+  await empty.bot.handleUpdate(messageUpdate(USER_ID, '/top'));
+  const replies = userMessages(empty.telegram, USER_ID);
+  assert.equal(replies.length, 1, 'empty /top must produce exactly one reply');
+  assert.equal(replies[0].text, NO_DEALS_LINE);
+});
+
+test('/watch add/duplicate/limit/too-long/empty; /unwatch present + absent; /watchlist empty + populated', async () => {
+  const { store, bot, telegram } = await setup();
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watchlist'));
+  assert.equal(
+    lastUserMessage(telegram, USER_ID).text,
+    'Your watchlist is empty. Use /watch <keyword> to add one.'
+  );
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /Usage: \/watch <keyword>/);
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch ' + 'x'.repeat(41)));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /too long/i);
+  assert.deepEqual(await store.listWatch(USER_ID), [], 'too-long keyword must not be stored');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch Headphones'));
+  assert.match(
+    lastUserMessage(telegram, USER_ID).text,
+    /🔔 Watching "Headphones" — I'll alert you when a matching deal appears\./
+  );
+  assert.deepEqual(await store.listWatch(USER_ID), ['headphones'], 'keyword is stored lowercased');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch HEADPHONES'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /You're already watching "HEADPHONES"/);
+
+  for (let i = 1; i <= 9; i++) {
+    await bot.handleUpdate(messageUpdate(USER_ID, `/watch kw${i}`));
+    assert.match(lastUserMessage(telegram, USER_ID).text, new RegExp(`Watching "kw${i}"`));
+  }
+  assert.equal((await store.listWatch(USER_ID)).length, 10, 'watchlist must hold 10 keywords');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch eleventh'));
+  assert.match(
+    lastUserMessage(telegram, USER_ID).text,
+    /You already have 10 keywords — remove one with \/unwatch <keyword> first\./
+  );
+  assert.equal((await store.listWatch(USER_ID)).length, 10, 'limit must not store an 11th keyword');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watchlist'));
+  const listReply = lastUserMessage(telegram, USER_ID).text;
+  for (const kw of ['headphones', 'kw1', 'kw9']) {
+    assert.ok(listReply.includes(`• ${kw}`), `watchlist must list ${kw}: ` + listReply);
+  }
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/unwatch KW1'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /Stopped watching "KW1"\./);
+  assert.equal((await store.listWatch(USER_ID)).length, 9);
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/unwatch kw1'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /"kw1" wasn't in your watchlist\./);
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/unwatch'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /Usage: \/unwatch <keyword>/);
+
+  // Freeing a slot lets a new keyword in again.
+  await bot.handleUpdate(messageUpdate(USER_ID, '/watch newkw'));
+  assert.match(lastUserMessage(telegram, USER_ID).text, /Watching "newkw"/);
+  assert.equal((await store.listWatch(USER_ID)).length, 10);
+});
+
+test('/start and /help both list all 9 stores and all new commands', async () => {
+  const newCommands = ['/stores', '/setdiscount', '/deals', '/top', '/watch', '/unwatch', '/watchlist'];
+  const { bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
+  let reply = telegram.calls.find((c) => c.method === 'sendMessage');
+  assert.ok(reply, 'expected a /start reply');
+  for (const storeName of STORE_ORDER) {
+    assert.ok(reply.text.includes(storeName), `/start must list ${storeName}`);
+  }
+  for (const cmd of newCommands) {
+    assert.ok(reply.text.includes(cmd), `/start must list ${cmd}: ` + reply.text);
+  }
+
+  telegram.calls.length = 0;
+  await bot.handleUpdate(messageUpdate(USER_ID, '/help'));
+  reply = telegram.calls.at(-1);
+  assert.ok(reply, 'expected a /help reply');
+  for (const storeName of STORE_ORDER) {
+    assert.ok(reply.text.includes(storeName), `/help must list ${storeName}`);
+  }
+  for (const cmd of newCommands) {
+    assert.ok(reply.text.includes(cmd), `/help must list ${cmd}: ` + reply.text);
+  }
 });

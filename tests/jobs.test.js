@@ -13,7 +13,7 @@ const jobs = require('../src/jobs');
 const { runDigest, chatIdOf } = jobs;
 const { initDb } = require('../src/db');
 const { dealKey, DEDUPE_WINDOW_MS } = require('../src/dedupe');
-const { loadFixture } = require('../src/feed');
+const { loadFixture, STORE_ORDER } = require('../src/feed');
 const { formatDigest } = require('../src/digest');
 
 const CFG = {
@@ -41,10 +41,16 @@ function makeBot({ failFor = new Set() } = {}) {
 // (no legacy status, no expiry), listSubscribers returns all rows.
 // Also implements the dedupe methods over an in-memory Map
 // (deal_key -> posted_at) so the stub exercises the same code path as
-// the real store.
-function makeDb(rows) {
+// the real store, plus the W1 per-user methods getUserPrefs /
+// listAllWatches (stubbed here because W1 is adding them to src/db.js
+// concurrently; the real store does not have them yet in this copy).
+// opts: { prefs: {userId: {user_id, stores, min_discount}}, watches:
+// [{user_id, keyword}], posted: shared Map } — all optional.
+function makeDb(rows, opts = {}) {
   const store = rows.map(r => ({ ...r }));
-  const posted = new Map();
+  const posted = opts.posted || new Map();
+  const prefsByUser = opts.prefs || {};
+  const watches = opts.watches || [];
   return {
     rows: store,
     posted,
@@ -52,6 +58,10 @@ function makeDb(rows) {
       return store.filter(r => r.status === 'active');
     },
     async listSubscribers() { return store.map(r => ({ ...r })); },
+    async getUserPrefs(userId) {
+      return prefsByUser[userId] || { user_id: userId, stores: [...STORE_ORDER], min_discount: 50 };
+    },
+    async listAllWatches() { return watches.map(w => ({ ...w })); },
     async getRecentPostedKeys(sinceMs) {
       return new Set([...posted.entries()].filter(([, at]) => at >= sinceMs).map(([k]) => k));
     },
@@ -222,7 +232,9 @@ test('dedupe: zero new deals means zero sendMessage calls and messages:0', async
       posted_at: Date.now(),
     }]);
     const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
-    assert.deepEqual(res, { sent: 0, failed: [], subscribers: 1, messages: 0, newDeals: 0 });
+    // REWRITTEN for the per-user digest: the return shape gained
+    // alertsSent (0 here — no watches, no alerts), everything else kept.
+    assert.deepEqual(res, { sent: 0, failed: [], subscribers: 1, messages: 0, newDeals: 0, alertsSent: 0 });
     assert.equal(bot.sent.length, 0);
   } finally {
     await db.close();
@@ -276,6 +288,7 @@ test('dedupe: runDigest still works when the db has no dedupe methods (minimal s
   const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
   assert.equal(res.sent, 1);
   assert.equal(res.newDeals, 1);
+  assert.equal(res.alertsSent, 0, 'a store with no watch methods must send no alerts');
   assert.ok(bot.sent[0].text.includes('Oil 1L'));
 });
 
@@ -312,4 +325,188 @@ test('dry-run: loadFixture + formatDigest writes no dedupe state', async () => {
   } finally {
     await db.close();
   }
+});
+
+// --- Per-user digest (W2 feature upgrade) ---
+
+const MULTI_FEED = {
+  Zepto: [{ title: 'Ghee 500ml', price: 149, mrp: 349, disc: 57, url: 'https://example.com/ghee', cat: 'Grocery' }],
+  'Amazon Now': [
+    { title: 'Oil 1L 55', price: 89, mrp: 199, disc: 55, url: 'https://example.com/oil55', cat: 'Grocery' },
+    { title: 'Oil 1L 85', price: 29, mrp: 199, disc: 85, url: 'https://example.com/oil85', cat: 'Grocery' },
+  ],
+};
+
+const sentTo = (bot, chatId) => bot.sent.filter(s => s.chatId === chatId);
+const alertsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => s.text.startsWith('🔔 Watch alert:'));
+const digestsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => !s.text.startsWith('🔔 Watch alert:'));
+
+test('per-user digest: Zepto-only user gets only Zepto; 80% user gets only 80%+ deals', async () => {
+  const bot = makeBot();
+  const db = makeDb([
+    { telegram_id: 1, status: 'active' },
+    { telegram_id: 2, status: 'active' },
+  ], {
+    prefs: {
+      1: { user_id: 1, stores: ['Zepto'], min_discount: 50 },
+      2: { user_id: 2, stores: ['Amazon Now', 'Zepto'], min_discount: 80 },
+    },
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.sent, 2);
+  assert.equal(res.messages, 2, 'one digest message per user');
+  assert.equal(res.newDeals, 2, 'user 1: 1 Zepto deal; user 2: 1 Amazon 85% deal');
+  assert.equal(res.alertsSent, 0);
+  const u1 = digestsTo(bot, 1).map(s => s.text).join('\n');
+  assert.ok(u1.includes('Ghee 500ml'), 'Zepto user must get the Zepto deal');
+  assert.ok(!u1.includes('Oil 1L'), 'Zepto-only user must not get Amazon deals');
+  const u2 = digestsTo(bot, 2).map(s => s.text).join('\n');
+  assert.ok(u2.includes('Oil 1L 85'), '80% user must get the 85% deal');
+  assert.ok(!u2.includes('Oil 1L 55'), '80% user must not get the 55% deal');
+  assert.ok(!u2.includes('Ghee 500ml'), '80% user must not get the 57% Zepto deal');
+});
+
+test('per-user digest: a user with zero enabled stores gets nothing and is not in failed', async () => {
+  const bot = makeBot();
+  const db = makeDb([
+    { telegram_id: 1, status: 'active' },
+    { telegram_id: 2, status: 'active' },
+  ], {
+    prefs: {
+      1: { user_id: 1, stores: [], min_discount: 50 },
+      2: { user_id: 2, stores: ['Zepto'], min_discount: 50 },
+    },
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.sent, 1, 'only the user with stores gets the digest');
+  assert.deepEqual(res.failed, []);
+  assert.equal(res.newDeals, 1);
+  assert.deepEqual(bot.sent.map(s => s.chatId), [2]);
+});
+
+test('per-user digest: a deal sent to user A in run 1 is not re-sent to user B in run 2', async () => {
+  const sharedPosted = new Map();
+  const botA = makeBot();
+  const dbA = makeDb([{ telegram_id: 1, status: 'active' }], { posted: sharedPosted });
+  const res1 = await runDigest(botA, dbA, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
+  assert.equal(res1.sent, 1);
+  assert.equal(res1.newDeals, 1);
+  assert.equal(sharedPosted.size, 1, 'run 1 must mark the key');
+
+  const botB = makeBot();
+  const dbB = makeDb([{ telegram_id: 2, status: 'active' }], { posted: sharedPosted });
+  const res2 = await runDigest(botB, dbB, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
+  assert.equal(res2.sent, 0, 'user B must not get a deal user A already received');
+  assert.equal(res2.newDeals, 0);
+  assert.equal(botB.sent.length, 0);
+});
+
+test('watch alerts: keyword match (case-insensitive title) sends exactly one alert per matching deal per user', async () => {
+  const bot = makeBot();
+  const db = makeDb([
+    { telegram_id: 1, status: 'active' },
+    { telegram_id: 2, status: 'active' },
+  ], {
+    watches: [
+      { user_id: 1, keyword: 'ghee' },
+      { user_id: 2, keyword: 'oil' },
+    ],
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.sent, 2, 'both users still get their digest');
+  assert.equal(res.alertsSent, 3, 'user 1: 1 (ghee); user 2: 2 (both oil deals)');
+  const a1 = alertsTo(bot, 1);
+  assert.equal(a1.length, 1);
+  assert.ok(a1[0].text.startsWith('🔔 Watch alert: ghee — '), 'alert format is "🔔 Watch alert: <keyword> — <deal line>"');
+  assert.ok(a1[0].text.includes('Ghee 500ml'), 'alert carries the deal line');
+  assert.equal(a1[0].opts.parse_mode, 'HTML');
+  assert.equal(a1[0].opts.disable_web_page_preview, true);
+  const a2 = alertsTo(bot, 2);
+  assert.equal(a2.length, 2, 'one alert per matching deal, not one per user');
+  assert.ok(a2.every(a => a.text.includes('Oil 1L')));
+  assert.ok(a2.some(a => a.text.includes('Oil 1L 55')) && a2.some(a => a.text.includes('Oil 1L 85')));
+});
+
+test('watch alerts: two keywords matching the same deal still send only one alert for it', async () => {
+  const bot = makeBot();
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    watches: [
+      { user_id: 1, keyword: 'ghee' },
+      { user_id: 1, keyword: '500ml' },
+    ],
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.alertsSent, 1);
+  assert.equal(alertsTo(bot, 1).length, 1);
+  assert.ok(alertsTo(bot, 1)[0].text.startsWith('🔔 Watch alert: ghee — '), 'first matching keyword wins');
+});
+
+test('watch alerts: non-matching deal sends no alert (digest still sent)', async () => {
+  const bot = makeBot();
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    watches: [{ user_id: 1, keyword: 'saffron' }],
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
+  assert.equal(res.sent, 1);
+  assert.equal(res.alertsSent, 0);
+  assert.equal(bot.sent.length, 1, 'only the digest, no alert');
+});
+
+test('watch alerts: already-posted deal sends no alert', async () => {
+  const bot = makeBot();
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    watches: [{ user_id: 1, keyword: 'ghee' }],
+  });
+  await db.markPosted([{
+    deal_key: dealKey('Zepto', MULTI_FEED.Zepto[0]),
+    store: 'Zepto',
+    title: 'Ghee 500ml',
+    posted_at: Date.now(),
+  }]);
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.sent, 1, 'the fresh Amazon deals still go out');
+  assert.equal(res.alertsSent, 0, 'the posted ghee deal must not alert');
+  assert.equal(alertsTo(bot, 1).length, 0);
+  assert.ok(!digestsTo(bot, 1).map(s => s.text).join('\n').includes('Ghee 500ml'));
+});
+
+test('watch alerts: no alert for a deal whose store the user disabled', async () => {
+  const bot = makeBot();
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    prefs: { 1: { user_id: 1, stores: ['Amazon Now'], min_discount: 50 } },
+    watches: [{ user_id: 1, keyword: 'ghee' }],
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
+  assert.equal(res.sent, 1);
+  assert.equal(res.alertsSent, 0, 'the Zepto ghee deal is outside this user\'s stores');
+  assert.ok(!bot.sent.map(s => s.text).join('\n').includes('Ghee 500ml'));
+});
+
+test('watch alerts: blocked user gets no alert and burns no keys', async () => {
+  const bot = makeBot({ failFor: new Set([1]) });
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    watches: [{ user_id: 1, keyword: 'oil' }],
+  });
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
+  assert.equal(res.sent, 0);
+  assert.equal(res.failed.length, 1);
+  assert.equal(res.alertsSent, 0, 'alerts are skipped when the digest send failed');
+  assert.equal(db.posted.size, 0, 'a fully failed run must not mark keys');
+});
+
+test('per-user digest: nothing new means zero sends and alertsSent:0', async () => {
+  const bot = makeBot();
+  const db = makeDb([{ telegram_id: 1, status: 'active' }], {
+    watches: [{ user_id: 1, keyword: 'oil' }],
+  });
+  await db.markPosted([{
+    deal_key: dealKey('Amazon Now', FEED['Amazon Now'][0]),
+    store: 'Amazon Now',
+    title: 'Oil 1L',
+    posted_at: Date.now(),
+  }]);
+  const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(FEED), delayMs: 0 });
+  assert.deepEqual(res, { sent: 0, failed: [], subscribers: 1, messages: 0, newDeals: 0, alertsSent: 0 });
+  assert.equal(bot.sent.length, 0);
+  assert.equal(db.posted.size, 1, 'markPosted must not be called when nothing was sent');
 });

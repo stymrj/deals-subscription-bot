@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { DEDUPE_WINDOW_MS, dealKey, selectDeals } = require('../src/dedupe');
+const { DEDUPE_WINDOW_MS, dealKey, selectDeals, selectUserDeals } = require('../src/dedupe');
 const { formatDigest } = require('../src/digest');
 
 test('dedupe window is 7 days', () => {
@@ -96,4 +96,67 @@ test('selectDeals: stores with nothing above min are omitted', () => {
     { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }
   );
   assert.deepEqual(picked, {});
+});
+
+// --- selectUserDeals (per-user store filter + threshold) ---
+
+const USER_DEALS = {
+  Zepto: [
+    { title: 'Zepto 90', price: 10, mrp: 100, disc: 90, url: 'https://example.com/z90', cat: '' },
+    { title: 'Zepto 60', price: 40, mrp: 100, disc: 60, url: 'https://example.com/z60', cat: '' },
+  ],
+  Blinkit: [
+    { title: 'Blinkit 85', price: 15, mrp: 100, disc: 85, url: 'https://example.com/b85', cat: '' },
+  ],
+  Croma: [
+    { title: 'Croma 95', price: 5, mrp: 100, disc: 95, url: 'https://example.com/c95', cat: '' },
+  ],
+};
+
+test('selectUserDeals: filters to the user\'s enabled stores only', () => {
+  const picked = selectUserDeals(USER_DEALS, { stores: ['Zepto'], min_discount: 50 }, { topPerStore: 5 });
+  assert.deepEqual(Object.keys(picked), ['Zepto']);
+  assert.deepEqual(picked.Zepto.map(d => d.title), ['Zepto 90', 'Zepto 60']);
+});
+
+test('selectUserDeals: per-user threshold overrides the config min', () => {
+  // Config min is 50, but this user wants 80+.
+  const picked = selectUserDeals(
+    USER_DEALS,
+    { stores: ['Zepto', 'Blinkit', 'Croma'], min_discount: 80 },
+    { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5 }
+  );
+  assert.deepEqual(picked.Zepto.map(d => d.title), ['Zepto 90']);
+  assert.deepEqual(picked.Blinkit.map(d => d.title), ['Blinkit 85']);
+  assert.deepEqual(picked.Croma.map(d => d.title), ['Croma 95']);
+});
+
+test('selectUserDeals: empty stores list returns {}', () => {
+  assert.deepEqual(selectUserDeals(USER_DEALS, { stores: [], min_discount: 50 }, {}), {});
+});
+
+test('selectUserDeals: stores with nothing above the user threshold are omitted', () => {
+  const picked = selectUserDeals(USER_DEALS, { stores: ['Zepto', 'Blinkit'], min_discount: 99 }, {});
+  assert.deepEqual(picked, {});
+});
+
+test('selectUserDeals: top-N per store still comes from config', () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    title: 'Deal ' + i, price: 10, mrp: 100, disc: 90 - i,
+    url: 'https://example.com/d' + i, cat: '',
+  }));
+  const picked = selectUserDeals({ Zepto: many }, { stores: ['Zepto'], min_discount: 50 }, { topPerStore: 3 });
+  assert.equal(picked.Zepto.length, 3);
+  assert.deepEqual(picked.Zepto.map(d => d.disc), [90, 89, 88]);
+});
+
+test('selectUserDeals: unknown store names in prefs are ignored', () => {
+  const picked = selectUserDeals(USER_DEALS, { stores: ['No Such Store', 'Zepto'], min_discount: 50 }, {});
+  assert.deepEqual(Object.keys(picked), ['Zepto']);
+});
+
+test('selectUserDeals: missing prefs falls back to all stores + config min', () => {
+  const picked = selectUserDeals(USER_DEALS, null, { MIN_DISCOUNT: 85, DIGEST_TOP_PER_STORE: 5 });
+  assert.deepEqual(Object.keys(picked).sort(), ['Blinkit', 'Croma', 'Zepto']);
+  assert.deepEqual(picked.Zepto.map(d => d.title), ['Zepto 90']);
 });

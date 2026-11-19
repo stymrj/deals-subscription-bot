@@ -39,6 +39,20 @@ In plain words:
 4. **They can stop anytime** with `/stop` — the digest stops immediately.
    They can re-subscribe anytime with `/start` → Subscribe.
 5. **They can check their subscription** with `/status`.
+6. **They can pick their stores** with `/stores` — an inline keyboard
+   with ✅/❌ toggles for each of the 9 stores. The digest then only
+   covers their enabled stores.
+7. **They can set their own discount threshold** with
+   `/setdiscount <10-90>` — e.g. `/setdiscount 30` gets deals at 30%+
+   off instead of the default 50%. `/status` shows the threshold.
+8. **They can ask for deals on demand** — `/deals` shows the current
+   top deals right now (their stores + threshold), `/top` shows the
+   single best deal right now. On-demand sends never consume deals
+   from the digest stream (no dedupe writes).
+9. **They can watch keywords** — `/watch <keyword>` (max 10), and
+   whenever a new deal's title contains that keyword, they get a
+   separate 🔔 alert in addition to the digest, once per deal.
+   `/unwatch <keyword>` removes one, `/watchlist` lists them.
 
 You are the only admin. Only your account (the `ADMIN_ID`) can use the
 admin commands — `/subscribers` and `/broadcast` (see (j)). Nobody else
@@ -374,13 +388,11 @@ pays, nothing expires, and there are no approvals.
   step, not this bot (see REPORT.md). Note: paid plans would also make
   the project commercial, and Vercel Hobby is non-commercial — that would
   mean moving to Vercel Pro (see (h)).
-- **No instant alerts.** There is no "ping me the second a 90%+ deal
-  drops" feature — only the every-15-minutes digest (with 7-day dedupe).
-  Instant 90%+ alerts are a v2 feature.
 - **No admin dashboard / web UI.** Subscriber management is the Turso
   database + the bot's admin commands (see (j)).
-- **No per-store subscriptions** (e.g. "only Amazon"). Everyone gets all
-  9 stores in one digest.
+- **No per-deal price-drop tracking** (e.g. "alert me when this exact
+  product falls below ₹X"). Keyword watch alerts (`/watch`) cover
+  titles, not prices.
 
 ---
 

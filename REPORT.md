@@ -1,5 +1,83 @@
 # Telegram Subscription Bot — report
 
+## 2026-11-19: Feature upgrade — /stores, /setdiscount, /deals + /top, /watch (current state)
+
+**What changed:** on 2026-11-19 Satyam said the bot was "too much basic
+and no features". Built the same evening by three workers in parallel
+(scratch copies, merged by the coordinator into the live tree). Nothing
+pushed, nothing deployed, no new env vars, no credentials used.
+
+- **Per-store picks — /stores.** Inline keyboard with ✅/❌ toggles for
+  all 9 stores (callback data `store:toggle:<index>` — index into
+  `STORE_ORDER`, never raw names); tapping toggles that store for that
+  user and edits the message to the new state. Stored per user in a new
+  `user_prefs` table (`user_id PK, stores TEXT JSON, min_discount INT`).
+  Default: all 9 stores ON. The 15-minute digest sends each user only
+  their enabled stores; a user with zero stores enabled gets nothing
+  (not an error).
+- **Own discount threshold — /setdiscount <10-90>.** Validated
+  10–90; success replies with the new threshold, bad input replies with
+  a usage hint + the current threshold. The digest, `/deals` and `/top`
+  all filter by the user's own threshold (default 50). `/status` shows
+  the threshold, the enabled-store count and the watchlist count (and
+  the "every 15 minutes · N%+ off" line now renders the user's own
+  threshold instead of a hardcoded 50%).
+- **On-demand deals — /deals and /top.** `/deals` fetches the feeds
+  right now and replies with the current top deals (user's stores +
+  threshold, reused `formatDigest`); `/top` replies with the single
+  best deal (highest discount, tie-break biggest saving). Both write NO
+  dedupe state — on-demand sends never consume deals from the digest
+  stream. Empty → one polite "no deals right now" line. No
+  active-subscription gate (anyone messaging the bot can use them).
+- **Keyword watchlist — /watch, /unwatch, /watchlist.** Max 10 keywords
+  per user (stored lowercased; match is a case-insensitive substring on
+  the deal title). `/watchlist` lists them. Inside `runDigest`, after
+  the per-user dedupe selection, each NEW deal is checked against that
+  user's keywords; a match sends one separate `🔔 Watch alert:
+  <keyword> — <deal line>` message per deal per user, in addition to
+  the digest. Alerts reuse the `posted_deals` keying (they only fire for
+  fresh deals, and every sent fresh key is marked posted), so a deal is
+  never alerted twice. New table `watchlist(user_id, keyword, PK
+  (user_id, keyword))`.
+- **/start + /help current.** Both render one shared `commandsText()`
+  helper (store list + all commands incl. the 7 new ones), so they
+  cannot drift. `createBot` accepts an optional `fetchDeals` override
+  (test seam; production passes nothing).
+- **No new env vars.** The deploy checklist is unchanged: push to main
+  (Vercel auto-deploys), no Vercel env changes, no GitHub secret
+  changes.
+
+**Test evidence (coordinator re-run on the merged tree):** `npm install`
+clean; `node --check` clean on all changed src + tests JS;
+**`npm test`: 113 pass, 0 fail** (70 baseline + 16 new db tests + 17
+new jobs/dedupe tests + 10 new bot tests). Coverage: store toggle
+on/off persists + message edit + toggle-back; threshold valid/invalid
++ digest filters per user + `/status` shows it; `/deals` + `/top`
+return current deals, write NO `posted_deals` rows, empty → polite
+one-liner; watch add/remove/list, max 10, case-insensitive match,
+one alert per deal per user, no alert for non-matching / already-posted
+/ store-excluded deals. One existing jobs test rewritten (expected
+return shape gained `alertsSent: 0`); all other existing tests pass
+unmodified. `npm run digest:dry` still works (2 messages, 9 fixture
+stores, not sent). Greps clean: no real tokens/values; no leftover
+"daily / 9 AM" copy in user-facing messages. Merge notes: the merge
+took W1's `src/db.js` + `tests/db.test.js`, W2's `src/jobs.js` +
+`src/dedupe.js` + `tests/jobs.test.js` + `tests/dedupe.test.js`, W3's
+`src/bot.js` + `tests/bot.test.js`; W3's local `db.js`/`dedupe.js`
+scaffolding was discarded (W3's `db.js` used a `watches` table name
+vs W1's `watchlist` — internal only, method signatures were
+identical). `runDigest` now returns `alertsSent` in addition to the
+previous fields; `api/cron-digest.js` forwards the result verbatim, so
+it is unaffected.
+
+**Honest note:** live feeds are still pending — the 9 scanner repos'
+feed branches are PR #3s, open and unmerged (separate coordinator).
+Until they merge and the repos publish `deals.json`, the live digest,
+`/deals`, `/top` and watch alerts all correctly find nothing. The feed
+publishes once daily (08:30 IST), so the 15-minute digest re-reads the
+same daily feed — new deals appear daily, not every 15 minutes, unless
+feed cadence is raised (separate decision).
+
 ## 2026-11-19: 15-minute digest + dedupe + better design (current state)
 
 **What changed:** on 2026-11-19 Satyam asked for the digest every 15
@@ -313,4 +391,4 @@ Required (blank in `.env.example`, bot refuses to start without them): `BOT_TOKE
 - No live feed: no `feed` branch exists yet (patches not applied); digest tested from fixtures only. No live GitHub Actions run of `deals-feed.yml`.
 - No `maxDuration` set on the digest function in `vercel.json` (deliberate — the plan's ceiling can't be verified without a Vercel account; if a digest run ever times out, add `"functions": {"api/cron-digest.js": {"maxDuration": 60}}`). The GitHub Actions workflow gives curl `--max-time 300`.
 - No `GET /healthz` endpoint. The `x-vercel-cron` header is accepted as an auth signal on `/api/cron-digest` (anyone can send it) alongside the `CRON_SECRET` — an unauthenticated hit without either is 401; a spoofed `x-vercel-cron` hit can at worst trigger one extra digest send.
-- **NOT built (upgrade paths):** paid plans — manual UPI or Razorpay/Telegram Payments auto-payments — can be added back later behind a plan gate (see the 2026-11-19 note at the top); instant 90%+ deal alerts (v2 — digest only for now); multi-plan pricing (no plans at all while the subscription is free). Vercel Hobby is non-commercial — if paid plans return, the project belongs on Vercel Pro.
+- **NOT built (upgrade paths):** paid plans — manual UPI or Razorpay/Telegram Payments auto-payments — can be added back later behind a plan gate (see the 2026-11-19 note at the top); per-deal price-drop tracking ("alert me when this exact product falls below ₹X") — keyword watch alerts cover titles, not prices. Vercel Hobby is non-commercial — if paid plans return, the project belongs on Vercel Pro.

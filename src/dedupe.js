@@ -49,4 +49,33 @@ function selectDeals(dealsByStore, config = {}) {
   return out;
 }
 
-module.exports = { DEDUPE_WINDOW_MS, normalizeUrl, normalizeTitle, dealKey, selectDeals };
+// Per-user selection: filter dealsByStore to the user's enabled stores
+// only, then run the shared selectDeals with the USER's min-discount
+// threshold (top-N per store still comes from config, as selectDeals
+// already does). Only stores with >= 1 selected deal are returned.
+// prefs: { stores: string[], min_discount: number } (W1's getUserPrefs
+// shape; defaults: all 9 stores, 50). A missing/partial prefs object
+// falls back to every store present in dealsByStore and the config min.
+function selectUserDeals(dealsByStore, prefs, config = {}) {
+  const stores = Array.isArray(prefs && prefs.stores)
+    ? prefs.stores
+    : Object.keys(dealsByStore || {});
+  const min = Number(
+    (prefs && prefs.min_discount) ?? config.MIN_DISCOUNT ?? config.minDiscount ?? 50
+  );
+  const filtered = {};
+  for (const store of stores) {
+    if (dealsByStore && Object.prototype.hasOwnProperty.call(dealsByStore, store)) {
+      filtered[store] = dealsByStore[store];
+    }
+  }
+  // Pass the user's min explicitly (MIN_DISCOUNT wins over minDiscount
+  // inside selectDeals, so the config's MIN_DISCOUNT must not leak in).
+  return selectDeals(filtered, {
+    MIN_DISCOUNT: min,
+    DIGEST_TOP_PER_STORE: config.DIGEST_TOP_PER_STORE,
+    topPerStore: config.topPerStore,
+  });
+}
+
+module.exports = { DEDUPE_WINDOW_MS, normalizeUrl, normalizeTitle, dealKey, selectDeals, selectUserDeals };
