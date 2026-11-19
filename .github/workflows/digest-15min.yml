@@ -14,6 +14,12 @@
 # never killed mid-send by the next tick; runs queue instead.
 # The digest fetches 9 feeds and sends, so curl gets a generous
 # 300 s timeout and --fail so a non-2xx response fails the step.
+#
+# NOTE 2026-11-19 ~22:14 IST: the schedule never fired a single
+# scheduled run since this file landed (~18:30 IST) — only manual
+# dispatches ran. The workflow was disabled + re-enabled via the API
+# to re-register the schedule; this comment touch forces a re-parse
+# of the file if the re-enable alone did not take.
 
 name: Digest (every 15 min)
 
