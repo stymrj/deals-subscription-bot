@@ -394,6 +394,55 @@ pays, nothing expires, and there are no approvals.
   product falls below ₹X"). Keyword watch alerts (`/watch`) cover
   titles, not prices.
 
+## (m) Design system
+
+All user-facing messages are built from one shared module,
+`src/design.js` — the single source of truth for the brand header, store
+emoji, footer, cadence line and deal rendering. No message formats its own
+header, footer, store name or deal line inline; `src/digest.js`
+(digest + `/deals`), `src/bot.js` (`/start`, `/top`, `/stores`, status,
+confirmations) and `src/jobs.js` (watch alerts) all call the same helpers,
+so the surfaces can never drift apart. Consistency is enforced by
+`tests/design.test.js`.
+
+**Rules:**
+
+- **Brand header** — every multi-line message opens with
+  `header(title, dateLabel)`: `<b>🛒 PriceDrop Hunter — {title}</b>`,
+  with an optional `📅 {date}` line underneath.
+- **Footer** — `footer()` (`—` + `PriceDrop Hunter · /start · /stores ·
+  /stop`) goes on every message longer than one line, and on NO one-line
+  reply (e.g. the no-deals one-liner has no footer).
+- **Cadence line** — `cadenceLine(minDiscount)`: `Fresh deals every 15
+  minutes · {min}%+ off · duplicates removed`. One helper, used by the
+  digest, `/start`, `/help` and `/status` — never retyped inline.
+- **Deal rendering** — `dealLine(deal, store)` is byte-identical in the
+  digest, `/deals`, `/top` and watch alerts:
+  `• <a href="{url}">Title</a> — <b>₹price</b> <s>₹mrp</s> ({disc}% off)
+  — {emoji} {store}`. No link tags when the deal has no URL.
+- **Length cap** — no message exceeds 3900 chars (`MAX_LEN`). A
+  too-long title is truncated with `…`; a message is never cut mid-deal.
+- **Emoji** — functional emoji are ONLY `🛒` (brand header), `📅` (date
+  line), `🔔` (watch alert), `✅` (on/success), `❌` (off), `🎉`
+  (subscribe confirmation). No other emoji anywhere. Store emoji come
+  only from the map below. All user-controlled text (titles, keywords,
+  store names) is HTML-escaped.
+- **Empty states** — `/deals` and `/top` with nothing matching reply
+  the `noDealsLine()` one-liner exactly once.
+
+**Store emoji map** (`STORE_EMOJI` in `src/design.js` — one emoji per
+store, the same everywhere the store appears):
+
+| Store | Emoji | Store | Emoji | Store | Emoji |
+|---|---|---|---|---|---|
+| Amazon Now | 🛒 | Blinkit | ⚡ | Flipkart Minutes | 🛍️ |
+| BigBasket | 🧺 | Myntra | 👗 | Croma | 📱 |
+| Zepto | 🚀 | Swiggy Instamart | 🍔 | JioMart | 🏪 |
+
+`storeLabel(store)` renders `{emoji} {name}` (or just the escaped name
+for an unknown store); `sectionTitle(store)` wraps it in `<b>…</b>` for
+digest headings. A store name never appears bare in a message.
+
 ---
 
 ## Files in this repo
@@ -402,6 +451,7 @@ pays, nothing expires, and there are no approvals.
 |---|---|
 | `src/index.js` | Entry point for local dev / polling — wires the bot + the 15-min digest job (NOT used on Vercel) |
 | `src/bot.js`, `src/config.js`, `src/db.js`, `src/digest.js`, `src/feed.js`, `src/jobs.js` | Bot, config, Turso database layer, digest, feed fetching, scheduler |
+| `src/design.js` | Design system — the single source of truth for every user-facing message (header, footer, store emoji, deal line); see README §(m) |
 | `src/dedupe.js` | Deal keys + 7-day dedupe filter (`posted_deals`) used by `runDigest` |
 | `api/_bot.js`, `api/webhook.js`, `api/cron-digest.js` | Vercel serverless functions: shared lazy bot, Telegram webhook receiver, 15-min digest endpoint (called by GitHub Actions, gated on `CRON_SECRET`) |
 | `vercel.json` | No crons (`{}`) — the digest is triggered by GitHub Actions, not a Vercel cron (Hobby allows one run/day) |

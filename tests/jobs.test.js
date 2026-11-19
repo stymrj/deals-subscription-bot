@@ -15,6 +15,7 @@ const { initDb } = require('../src/db');
 const { dealKey, DEDUPE_WINDOW_MS } = require('../src/dedupe');
 const { loadFixture, STORE_ORDER } = require('../src/feed');
 const { formatDigest } = require('../src/digest');
+const { dealLine, watchAlert } = require('../src/design');
 
 const CFG = {
   minDiscount: 50, digestTopPerStore: 5, digestHourIst: 9,
@@ -338,8 +339,8 @@ const MULTI_FEED = {
 };
 
 const sentTo = (bot, chatId) => bot.sent.filter(s => s.chatId === chatId);
-const alertsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => s.text.startsWith('🔔 Watch alert:'));
-const digestsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => !s.text.startsWith('🔔 Watch alert:'));
+const alertsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => s.text.startsWith('🔔 <b>Watch alert:'));
+const digestsTo = (bot, chatId) => sentTo(bot, chatId).filter(s => !s.text.startsWith('🔔 <b>Watch alert:'));
 
 test('per-user digest: Zepto-only user gets only Zepto; 80% user gets only 80%+ deals', async () => {
   const bot = makeBot();
@@ -417,8 +418,10 @@ test('watch alerts: keyword match (case-insensitive title) sends exactly one ale
   assert.equal(res.alertsSent, 3, 'user 1: 1 (ghee); user 2: 2 (both oil deals)');
   const a1 = alertsTo(bot, 1);
   assert.equal(a1.length, 1);
-  assert.ok(a1[0].text.startsWith('🔔 Watch alert: ghee — '), 'alert format is "🔔 Watch alert: <keyword> — <deal line>"');
-  assert.ok(a1[0].text.includes('Ghee 500ml'), 'alert carries the deal line');
+  // New design-system format: alert line + shared dealLine + footer.
+  assert.equal(a1[0].text, watchAlert('ghee', MULTI_FEED.Zepto[0], 'Zepto'));
+  assert.ok(a1[0].text.includes(dealLine(MULTI_FEED.Zepto[0], 'Zepto')), 'alert carries the shared deal line');
+  assert.ok(a1[0].text.endsWith('\n—\nPriceDrop Hunter · /start · /stores · /stop'), 'alert ends with the shared footer');
   assert.equal(a1[0].opts.parse_mode, 'HTML');
   assert.equal(a1[0].opts.disable_web_page_preview, true);
   const a2 = alertsTo(bot, 2);
@@ -438,7 +441,8 @@ test('watch alerts: two keywords matching the same deal still send only one aler
   const res = await runDigest(bot, db, CFG, { fetchFn: stubFetch(MULTI_FEED), delayMs: 0 });
   assert.equal(res.alertsSent, 1);
   assert.equal(alertsTo(bot, 1).length, 1);
-  assert.ok(alertsTo(bot, 1)[0].text.startsWith('🔔 Watch alert: ghee — '), 'first matching keyword wins');
+  assert.ok(alertsTo(bot, 1)[0].text.includes('<b>Watch alert: "ghee"</b>'), 'first matching keyword wins');
+  assert.ok(!alertsTo(bot, 1)[0].text.includes('"500ml"'), 'second keyword must not appear in the alert');
 });
 
 test('watch alerts: non-matching deal sends no alert (digest still sent)', async () => {

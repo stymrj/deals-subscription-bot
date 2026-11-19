@@ -2,15 +2,24 @@
 
 const { Telegraf, Markup } = require('telegraf');
 const { STORE_ORDER, fetchDeals: defaultFetchDeals } = require('./feed');
-const { formatDigest, dealLine } = require('./digest');
+const { formatDigest } = require('./digest');
+const {
+  header,
+  footer,
+  cadenceLine,
+  storeLabel,
+  dealLine,
+  noDealsLine,
+  escapeHtml,
+  MAX_LEN,
+} = require('./design');
 const { selectUserDeals } = require('./dedupe');
 
 const IST = 'Asia/Kolkata';
 
 // Polite one-liner for /deals and /top when nothing matches the user's
 // stores + discount threshold. Sent exactly once, never as a digest.
-const NO_DEALS_LINE =
-  'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.';
+const NO_DEALS_LINE = noDealsLine();
 
 const MAX_WATCH_KEYWORD_LEN = 40;
 
@@ -43,7 +52,7 @@ function nextDigestLabel(nowMs, _digestHourIst) {
 // The one shared store list: /start and /help both render from STORE_ORDER
 // (src/feed.js) so the two messages can never drift apart.
 function storeListText() {
-  return STORE_ORDER.map((s) => `• ${s}`).join('\n');
+  return STORE_ORDER.map((s) => `• ${storeLabel(s)}`).join('\n');
 }
 
 // The one shared command list: /start and /help both render from here so
@@ -113,10 +122,11 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
   const fetchDealsFn = fetchDealsOverride || defaultFetchDeals;
 
   const welcomeText = () =>
-    `👋 Welcome to PriceDrop Hunter!\n\n` +
-    `🆓 Free subscription — fresh deals every 15 minutes, only 50%+ off, duplicates removed.\n\n` +
+    `${header('Welcome')}\n\n` +
+    `Free subscription — no payment needed.\n` +
+    `${cadenceLine(50)}\n\n` +
     `${commandsText()}\n\n` +
-    `Tap below to get started:`;
+    `Tap below to get started:${footer()}`;
 
   const startKeyboard = () =>
     Markup.inlineKeyboard([
@@ -162,17 +172,17 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     const enabledCount = Array.isArray(prefs.stores) ? prefs.stores.length : STORE_ORDER.length;
     const watchCount = Number.isInteger(extra.watchCount) ? extra.watchCount : 0;
     return (
-      `📋 Your subscription\n\n` +
+      `${header('Your subscription')}\n\n` +
       `Free subscriber\n` +
-      `Status: ${statusLabel}\n` +
-      `Min. discount: ${min}%\n` +
-      `Stores: ${enabledCount} of ${STORE_ORDER.length} enabled\n` +
-      `Watchlist: ${watchCount} keyword(s)\n` +
-      `Fresh deals every 15 minutes · ${min}%+ off · duplicates removed\n` +
-      `Next digest: ${nextDigestLabel(Date.now(), config.digestHourIst)}` +
+      `<b>Status:</b> ${statusLabel}\n` +
+      `<b>Min. discount:</b> ${min}%\n` +
+      `<b>Stores:</b> ${enabledCount} of ${STORE_ORDER.length} enabled\n` +
+      `<b>Watchlist:</b> ${watchCount} keyword(s)\n` +
+      `${cadenceLine(min)}\n` +
+      `<b>Next digest:</b> ${nextDigestLabel(Date.now(), config.digestHourIst)}` +
       (subscribed
-        ? ''
-        : `\n\nTap /start and hit Subscribe to join — it's free.`)
+        ? footer()
+        : `\n\nTap /start and hit Subscribe to join — it's free.${footer()}`)
     );
   }
 
@@ -180,12 +190,12 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
 
   function storesText(prefs) {
     const lines = STORE_ORDER.map(
-      (s) => `${prefs.stores.includes(s) ? '✅' : '❌'} ${s}`
+      (s) => `${prefs.stores.includes(s) ? '✅' : '❌'} ${storeLabel(s)}`
     );
     return (
-      `🏬 Your stores\n\n` +
+      `${header('Your stores')}\n\n` +
       `${lines.join('\n')}\n\n` +
-      `Tap a store to turn it on/off for your digest.`
+      `Tap a store to turn it on/off for your digest.${footer()}`
     );
   }
 
@@ -197,7 +207,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
         const on = prefs.stores.includes(STORE_ORDER[j]);
         // Callback data carries the store INDEX, never the name: store
         // names contain spaces and callback data must stay compact.
-        row.push(Markup.button.callback(`${on ? '✅' : '❌'} ${STORE_ORDER[j]}`, `store:toggle:${j}`));
+        row.push(Markup.button.callback(`${on ? '✅' : '❌'} ${storeLabel(STORE_ORDER[j])}`, `store:toggle:${j}`));
       }
       rows.push(row);
     }
@@ -229,20 +239,22 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
 
   bot.start(async (ctx) => {
     await ensureSubscriber(ctx);
-    await ctx.reply(welcomeText(), startKeyboard());
+    await ctx.reply(welcomeText(), { ...startKeyboard(), parse_mode: 'HTML' });
   });
 
   bot.help(async (ctx) => {
     await ctx.reply(
-      `PriceDrop Hunter — Fresh Deals\n\n` +
-        `🆓 Free subscription — fresh deals every 15 minutes, only 50%+ off, duplicates removed.\n\n` +
-        `${commandsText()}`
+      `${header('Help')}\n\n` +
+        `Free subscription — no payment needed.\n` +
+        `${cadenceLine(50)}\n\n` +
+        `${commandsText()}${footer()}`,
+      { parse_mode: 'HTML' }
     );
   });
 
   bot.command('status', async (ctx) => {
     const sub = await ensureSubscriber(ctx);
-    await ctx.reply(statusText(sub, await loadStatusExtra(ctx.from.id)), startKeyboard());
+    await ctx.reply(statusText(sub, await loadStatusExtra(ctx.from.id)), { ...startKeyboard(), parse_mode: 'HTML' });
   });
 
   bot.command('stop', async (ctx) => {
@@ -254,7 +266,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     await store.setStatus(ctx.from.id, 'expired');
     await ctx.reply(
       'Your subscription is stopped — you will no longer receive the deal updates. ' +
-      'Tap /start to subscribe again (free).'
+      'Tap /start to subscribe again (free).' + footer()
     );
   });
 
@@ -265,7 +277,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
   bot.command('stores', async (ctx) => {
     await ensureSubscriber(ctx);
     const prefs = await loadPrefs(ctx.from.id);
-    await ctx.reply(storesText(prefs), storesKeyboard(prefs));
+    await ctx.reply(storesText(prefs), { ...storesKeyboard(prefs), parse_mode: 'HTML' });
   });
 
   bot.command('setdiscount', async (ctx) => {
@@ -302,7 +314,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
       return;
     }
     for (const msg of messages) {
-      await ctx.reply(msg, { parse_mode: 'HTML' });
+      await ctx.reply(msg, { parse_mode: 'HTML', disable_web_page_preview: true });
     }
   });
 
@@ -324,9 +336,15 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
       await ctx.reply(NO_DEALS_LINE);
       return;
     }
+    // Budget the deal line so header + line + footer stay within MAX_LEN:
+    // dealLine truncates to its maxLen, so pass it only what's left after
+    // the header, the newline, and the footer.
+    const topHead = header('Top deal');
+    const topFoot = footer();
+    const line = dealLine(best, bestStore, MAX_LEN - topHead.length - 1 - topFoot.length);
     await ctx.reply(
-      `<b>🏆 Top deal right now</b>\n${dealLine(best, bestStore)}`,
-      { parse_mode: 'HTML' }
+      `${topHead}\n${line}${topFoot}`,
+      { parse_mode: 'HTML', disable_web_page_preview: true }
     );
   });
 
@@ -377,7 +395,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
       await ctx.reply('Your watchlist is empty. Use /watch <keyword> to add one.');
       return;
     }
-    await ctx.reply(`🔔 Your watchlist:\n${list.map((k) => `• ${k}`).join('\n')}`);
+    await ctx.reply(`🔔 Your watchlist:\n${list.map((k) => `• ${k}`).join('\n')}${footer()}`);
   });
 
   bot.command('subscribers', async (ctx) => {
@@ -394,12 +412,14 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     }
     const lines = all.slice(0, 20).map((s) => {
       const label = s.status === 'active' ? 'subscribed' : 'stopped';
-      return `${s.name || '—'} (@${s.username || '—'}) — ${label}`;
+      return `${escapeHtml(s.name || '—')} (@${escapeHtml(s.username || '—')}) — ${label}`;
     });
     await ctx.reply(
-      `📊 Subscribers: ${all.length} total\n` +
+      `${header('Subscribers')}\n\n` +
+        `${all.length} total\n` +
         `Active: ${active} • Stopped: ${stopped}\n\n` +
-        (lines.join('\n') || 'No subscribers yet.')
+        (lines.join('\n') || 'No subscribers yet.') + footer(),
+      { parse_mode: 'HTML' }
     );
   });
 
@@ -423,19 +443,21 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     await ctx.answerCbQuery();
     await ensureSubscriber(ctx);
     await store.setStatus(ctx.from.id, 'active');
+    const prefs = await loadPrefs(ctx.from.id);
+    const min = Number.isInteger(prefs.min_discount) ? prefs.min_discount : 50;
     await ctx.reply(
-      `🎉 You're subscribed — for free!\n\n` +
-        `Fresh deals arrive every 15 minutes.\n` +
-        `Next digest: ${nextDigestLabel(Date.now(), config.digestHourIst)}.\n\n` +
-        `Happy deal hunting! 🛒`,
-      startKeyboard()
+      `🎉 ${header('Subscribed')}\n\n` +
+        `You're subscribed — for free!\n` +
+        `${cadenceLine(min)}\n` +
+        `<b>Next digest:</b> ${nextDigestLabel(Date.now(), config.digestHourIst)}${footer()}`,
+      { ...startKeyboard(), parse_mode: 'HTML' }
     );
   });
 
   bot.action('status', async (ctx) => {
     await ctx.answerCbQuery();
     const sub = await ensureSubscriber(ctx);
-    await ctx.reply(statusText(sub, await loadStatusExtra(ctx.from.id)), startKeyboard());
+    await ctx.reply(statusText(sub, await loadStatusExtra(ctx.from.id)), { ...startKeyboard(), parse_mode: 'HTML' });
   });
 
   // Callback data: `store:toggle:<index>` — index into STORE_ORDER.
@@ -452,7 +474,7 @@ function createBot({ config, store, fetchDeals: fetchDealsOverride }) {
     const updated = typeof store.setUserStores === 'function'
       ? await store.setUserStores(ctx.from.id, next)
       : { user_id: ctx.from.id, stores: next, min_discount: prefs.min_discount };
-    await ctx.editMessageText(storesText(updated), storesKeyboard(updated));
+    await ctx.editMessageText(storesText(updated), { ...storesKeyboard(updated), parse_mode: 'HTML' });
   });
 
   // ---------- Photos and free text ----------

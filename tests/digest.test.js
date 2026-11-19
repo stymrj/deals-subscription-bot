@@ -1,12 +1,14 @@
 // digest.test.js — formatting rules: top-5 cap, min-discount filter,
 // empty stores omitted (15-minute cadence: no "no deals" spam),
 // empty digest sends nothing, 3900-char split into <=2 messages without
-// cutting a deal, HTML escaping.
+// cutting a deal, HTML escaping. All message strings come from
+// src/design.js; digest.js only assembles blocks from it.
 'use strict';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { formatDigest, splitMessages, escapeHtml, istDateTimeLabel } = require('../src/digest');
+const design = require('../src/design');
 const { loadFixture } = require('../src/feed');
 
 const CFG = { MIN_DISCOUNT: 50, DIGEST_TOP_PER_STORE: 5, date: '2026-11-10' };
@@ -38,7 +40,7 @@ test('empty stores are omitted entirely: no heading, no "no deals" line', () => 
   assert.ok(!text.includes('Croma'), 'empty store must not appear: ' + text.slice(0, 300));
   assert.ok(!text.includes('Blinkit'), 'all-below-min store must not appear');
   assert.ok(!text.includes('no deals above'), 'no "no deals" line may appear at 15-minute cadence');
-  assert.ok(text.includes('<b>Amazon Now</b>'), 'store with deals must keep its bold heading');
+  assert.ok(text.includes('<b>🛒 Amazon Now</b>'), 'store with deals must keep its bold emoji heading');
   assert.ok(text.includes('Good 60'));
 });
 
@@ -66,14 +68,20 @@ test('HTML escaping: titles cannot break out of the markup', () => {
 
 test('header carries the IST date and time plus the terms (50%+, 15 min, deduped)', () => {
   const text = formatDigest({ 'Amazon Now': [deal('X', 60)] }, CFG).join('\n');
+  assert.ok(text.includes('<b>🛒 PriceDrop Hunter — Fresh Deals</b>'), 'brand header missing: ' + text.slice(0, 200));
+  assert.ok(text.includes('📅 Tue, 10 Nov 2026'), 'date line missing: ' + text.slice(0, 200));
   assert.ok(text.includes('Tue, 10 Nov 2026'), 'IST date missing: ' + text.slice(0, 200));
   assert.ok(text.includes('5:30 AM IST'), 'IST time missing: ' + text.slice(0, 200));
   assert.ok(text.includes('Fresh Deals'), 'fresh-deals header missing');
+  assert.ok(text.includes('Fresh deals every 15 minutes · 50%+ off · duplicates removed'), 'cadence line must be the pinned wording');
   assert.ok(text.includes('50%+ off'), 'terms must state 50%+ off');
   assert.ok(text.includes('every 15 minutes'), 'terms must state the 15-minute cadence');
   assert.ok(text.includes('duplicates removed'), 'terms must state duplicates are removed');
   assert.ok(text.includes('Free subscriber digest'), 'free-subscriber header missing');
   assert.ok(text.includes('prices change fast, check the link before buying'), 'header disclaimer missing');
+  assert.ok(text.includes('PriceDrop Hunter · /start · /stores · /stop'), 'pinned footer missing');
+  assert.ok(!text.includes('💎'), '💎 is not in the pinned emoji set');
+  assert.ok(!text.includes('Manage your subscription'), 'old footer wording must be gone');
   assert.ok(!text.includes('Daily Digest'), '"Daily Digest" copy must be gone');
   assert.ok(!text.includes('9 AM'), '"9 AM" copy must be gone');
   assert.ok(!text.includes('tomorrow'), '"tomorrow" copy must be gone');
@@ -83,15 +91,15 @@ test('header carries the IST date and time plus the terms (50%+, 15 min, deduped
 
 test('deal renders as one block: linked name, price, struck-through MRP, discount %, store', () => {
   const text = formatDigest({ 'Amazon Now': [deal('Oil 1L', 60, 100, 250)] }, CFG).join('\n');
-  assert.ok(text.includes('<b>Amazon Now</b>'), 'bold store heading missing');
+  assert.ok(text.includes('<b>🛒 Amazon Now</b>'), 'bold emoji store heading missing');
   assert.ok(text.includes('<a href="https://example.com/Oil%201L">Oil 1L</a>'), 'linked deal name missing: ' + text);
-  assert.ok(text.includes('₹100'), 'sell price missing');
+  assert.ok(text.includes('<b>₹100</b>'), 'bold sell price missing');
   assert.ok(text.includes('<s>₹250</s>'), 'struck-through MRP missing');
   assert.ok(text.includes('(60% off)'), 'discount % missing');
   // The deal is one indivisible line: exactly one '• ' line, holding everything.
   const lines = text.split('\n').filter(l => l.startsWith('• '));
   assert.equal(lines.length, 1, 'expected exactly one deal line, got ' + lines.length);
-  assert.ok(/\(60% off\) — Amazon Now$/.test(lines[0]), 'deal line must end with the store: ' + lines[0]);
+  assert.ok(/\(60% off\) — 🛒 Amazon Now$/.test(lines[0]), 'deal line must end with the emoji store label: ' + lines[0]);
 });
 
 test('deal without a URL still renders (plain name, no empty link)', () => {
@@ -166,4 +174,94 @@ test('fixture loads: 9 stores, Croma empty and omitted, one 95% deal', () => {
   assert.ok(text.includes('95% off'));
   assert.ok(!text.includes('Croma'), 'empty Croma must be omitted from the digest');
   assert.ok(!text.includes('no deals above'), 'no "no deals" line may appear');
+});
+
+// ---------- design.js: the pinned API ----------
+
+test('design: escapeHtml / inr / istDateLabel', () => {
+  assert.equal(design.escapeHtml(null), '');
+  assert.equal(design.escapeHtml(undefined), '');
+  assert.equal(design.escapeHtml('a"b<c>d&e'), 'a&quot;b&lt;c&gt;d&amp;e');
+  assert.equal(design.inr(1234), '₹1,234');
+  assert.equal(design.inr(1234.6), '₹1,235');
+  assert.equal(design.inr(null), '₹0');
+  assert.equal(design.istDateLabel('2026-11-19T12:45:00Z'), 'Thu, 19 Nov 2026');
+  // digest.js keeps re-exporting the helpers so existing imports work.
+  const digest = require('../src/digest');
+  assert.equal(digest.escapeHtml, design.escapeHtml);
+  assert.equal(digest.inr, design.inr);
+  assert.equal(digest.istDateLabel, design.istDateLabel);
+  assert.equal(digest.istDateTimeLabel, design.istDateTimeLabel);
+  assert.equal(digest.dealLine, design.dealLine);
+});
+
+test('design: storeEmoji / storeLabel / sectionTitle', () => {
+  assert.equal(design.storeEmoji('Amazon Now'), '🛒');
+  assert.equal(design.storeEmoji('Zepto'), '🚀');
+  assert.equal(design.storeEmoji('No Such Store'), '');
+  assert.equal(design.storeLabel('Blinkit'), '⚡ Blinkit');
+  assert.equal(design.storeLabel('No Such Store'), 'No Such Store');
+  assert.equal(design.storeLabel('A<&>"B'), 'A&lt;&amp;&gt;&quot;B');
+  assert.equal(design.sectionTitle('Myntra'), '<b>👗 Myntra</b>');
+  assert.equal(design.sectionTitle('No Such Store'), '<b>No Such Store</b>');
+  assert.equal(Object.keys(design.STORE_EMOJI).length, 9, 'one emoji per tracked store');
+});
+
+test('design: header / footer / cadenceLine', () => {
+  assert.equal(
+    design.header('Fresh Deals', 'Thu, 19 Nov 2026 · 6:15 PM IST'),
+    '<b>🛒 PriceDrop Hunter — Fresh Deals</b>\n📅 Thu, 19 Nov 2026 · 6:15 PM IST'
+  );
+  assert.equal(design.header('Fresh Deals'), '<b>🛒 PriceDrop Hunter — Fresh Deals</b>');
+  assert.equal(design.footer(), '\n—\nPriceDrop Hunter · /start · /stores · /stop');
+  assert.equal(design.cadenceLine(50), 'Fresh deals every 15 minutes · 50%+ off · duplicates removed');
+  assert.equal(design.cadenceLine(30), 'Fresh deals every 15 minutes · 30%+ off · duplicates removed');
+  assert.equal(design.BRAND_NAME, 'PriceDrop Hunter');
+  assert.equal(design.MAX_LEN, 3900);
+});
+
+test('design: noDealsLine matches the bot one-liner verbatim', () => {
+  assert.equal(
+    design.noDealsLine(),
+    'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.'
+  );
+});
+
+test('design: dealLine with emoji store label, URL-less deal, escaping', () => {
+  const line = design.dealLine({ title: 'Oil 1L', price: 100, mrp: 250, disc: 60, url: 'https://example.com/oil' }, 'Amazon Now');
+  assert.equal(line, '• <a href="https://example.com/oil">Oil 1L</a> — <b>₹100</b> <s>₹250</s> (60% off) — 🛒 Amazon Now');
+  const noUrl = design.dealLine({ title: 'Plain', price: 50, mrp: 100, disc: 50, url: '' }, 'Zepto');
+  assert.ok(!noUrl.includes('<a href'), 'no link when there is no URL');
+  assert.ok(noUrl.endsWith('— 🚀 Zepto'), 'unknown-free store label: ' + noUrl);
+  const unknown = design.dealLine({ title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'Mystery Mart');
+  assert.ok(unknown.endsWith('— Mystery Mart'), 'unknown store renders bare: ' + unknown);
+  const evil = design.dealLine({ title: '<b>&"q"</b>', price: 1, mrp: 2, disc: 50, url: 'https://e.com/?a=1&b=2' }, 'Blinkit');
+  assert.ok(!evil.includes('<b>&'), 'raw markup leaked into title');
+  assert.ok(evil.includes('&lt;b&gt;&amp;&quot;q&quot;&lt;/b&gt;'), 'title must be escaped');
+  assert.ok(evil.includes('a=1&amp;b=2'), 'URL ampersand must be escaped');
+});
+
+test('design: watchAlert is bold quoted keyword + deal line + footer', () => {
+  const alert = design.watchAlert('ghee', { title: 'Ghee 500ml', price: 149, mrp: 349, disc: 57, url: 'https://example.com/ghee' }, 'Zepto');
+  assert.ok(alert.startsWith('🔔 <b>Watch alert: "ghee"</b>\n• '), 'alert header wrong: ' + alert.slice(0, 80));
+  assert.ok(alert.includes('(57% off) — 🚀 Zepto'), 'deal line missing emoji store label');
+  assert.ok(alert.endsWith(design.footer()), 'alert must end with the pinned footer');
+  const evil = design.watchAlert('<script>', { title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'Zepto');
+  assert.ok(!evil.includes('<script>'), 'raw keyword leaked');
+  assert.ok(evil.includes('&lt;script&gt;'), 'keyword must be escaped');
+});
+
+test('design: only pinned emoji appear in design.js output', () => {
+  // Every emoji the design module can emit: brand 🛒, date 📅, alert 🔔,
+  // plus the 9 store emoji. ✅ ❌ 🎉 live in bot.js (W2), not here.
+  const samples = [
+    design.header('Fresh Deals', 'Thu, 19 Nov 2026 · 6:15 PM IST'),
+    design.footer(), design.cadenceLine(50), design.noDealsLine(),
+    design.sectionTitle('Zepto'),
+    design.dealLine({ title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'Swiggy Instamart'),
+    design.watchAlert('kw', { title: 'X', price: 1, mrp: 2, disc: 50, url: '' }, 'JioMart'),
+  ].join('\n');
+  for (const banned of ['👋', '🆓', '📋', '🏬', '🏆', '📊', '💎']) {
+    assert.ok(!samples.includes(banned), 'unpinned emoji in design output: ' + banned);
+  }
 });

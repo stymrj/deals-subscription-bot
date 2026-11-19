@@ -34,7 +34,8 @@
 
 const cron = require('node-cron');
 const { fetchDeals, STORE_ORDER } = require('./feed');
-const { formatDigest, dealLine } = require('./digest');
+const { formatDigest } = require('./digest');
+const { watchAlert } = require('./design');
 const { DEDUPE_WINDOW_MS, dealKey, selectUserDeals } = require('./dedupe');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -178,9 +179,11 @@ async function runDigest(bot, db, config = {}, deps = {}) {
             const hit = keywords.find(kw => kw && title.includes(kw));
             if (!hit) continue;
             try {
+              // One alert per matching deal, built by the shared design
+              // helper (alert line + shared dealLine + footer).
               await bot.telegram.sendMessage(
                 chatId,
-                `🔔 Watch alert: ${hit} — ${dealLine(deal, store)}`,
+                watchAlert(hit, deal, store),
                 { parse_mode: 'HTML', disable_web_page_preview: true }
               );
               alertsSent++;

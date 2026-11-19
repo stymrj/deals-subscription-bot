@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { initDb } = require('../src/db');
 const { createBot, nextDigestLabel } = require('../src/bot');
 const { STORE_ORDER } = require('../src/feed');
+const { storeLabel, noDealsLine, header, footer, cadenceLine, dealLine, escapeHtml } = require('../src/design');
 
 const ADMIN_ID = 999;
 const USER_ID = 111;
@@ -217,7 +218,9 @@ test('/status: subscribed user sees Free wording and no price/expiry text; unsub
   let reply = telegram.calls.at(-1);
   assert.match(reply.text, /free/i, 'status should say the plan is free');
   assert.match(reply.text, /not (a )?subscriber|not subscribed/i, 'unsubscribed user must see not-subscribed wording');
-  assert.ok(!/₹|49|expir|price/i.test(reply.text), 'status must not mention price/expiry: ' + reply.text);
+  // Footer carries the brand name "PriceDrop Hunter", so the price check
+  // must not match the word "price" inside the brand name.
+  assert.ok(!/₹|\b49\b|expir/i.test(reply.text), 'status must not mention price/expiry: ' + reply.text);
 
   // Subscribe, then /status again.
   await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
@@ -226,7 +229,7 @@ test('/status: subscribed user sees Free wording and no price/expiry text; unsub
   reply = telegram.calls.at(-1);
   assert.match(reply.text, /free subscriber/i);
   assert.match(reply.text, /next digest/i, 'status should show the next digest time');
-  assert.ok(!/₹|49|expir|price/i.test(reply.text), 'status must not mention price/expiry: ' + reply.text);
+  assert.ok(!/₹|\b49\b|expir/i.test(reply.text), 'status must not mention price/expiry: ' + reply.text);
 });
 
 test('photo: subscribed and unsubscribed users get a no-payment-needed reply; nothing stored, nothing to admin', async () => {
@@ -247,7 +250,7 @@ test('photo: subscribed and unsubscribed users get a no-payment-needed reply; no
   assert.equal((await store.getSubscriber(USER_ID)).status, 'active');
   telegram.calls.length = 0;
   await bot.handleUpdate(photoUpdate(USER_ID));
-  reply = telegram.find((c) => c.method === 'sendMessage' && c.chat_id === USER_ID);
+  reply = telegram.calls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID).at(-1);
   assert.ok(reply, 'expected a reply to the photo from a subscriber');
   assert.match(reply.text, /no payment needed/i);
   assert.equal(adminCalls(telegram).length, 0, 'subscriber photo must not be forwarded to admin');
@@ -391,7 +394,7 @@ test('cadence copy: welcome/help/subscribe/status say every 15 minutes, no 9 AM 
 
   telegram.calls.length = 0;
   await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
-  reply = telegram.calls.find((c) => c.method === 'sendMessage' && /subscribed/i.test(c.text || ''));
+  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('🎉'));
   assert.ok(reply, 'expected a subscribe confirmation');
   assert.match(reply.text, /every 15 minutes/i, 'subscribe reply must state the 15-minute cadence');
   assert.ok(!stale.test(reply.text), 'subscribe reply has stale daily copy: ' + reply.text);
@@ -445,8 +448,7 @@ test('nextDigestLabel lands on a 15-minute IST boundary (incl. midnight rollover
 
 // ---------- Worker 3: /stores, /setdiscount, /deals, /top, /watch ----------
 
-const NO_DEALS_LINE =
-  'No deals right now matching your stores and discount threshold — check back soon, fresh deals arrive every 15 minutes.';
+const NO_DEALS_LINE = noDealsLine();
 
 const STUB_DEALS = {
   'Amazon Now': [
@@ -479,14 +481,16 @@ test('/stores shows 9 toggle buttons (2 per row), all ✅ by default', async () 
   const reply = lastUserMessage(telegram, USER_ID);
   assert.ok(reply, 'expected a /stores reply');
   for (const storeName of STORE_ORDER) {
-    assert.ok(reply.text.includes(`✅ ${storeName}`), `/stores must show ✅ ${storeName}: ` + reply.text);
+    assert.ok(reply.text.includes(`✅ ${storeLabel(storeName)}`), `/stores must show ✅ ${storeLabel(storeName)}: ` + reply.text);
   }
   assert.match(reply.text, /Tap a store to turn it on\/off/);
+  assert.equal(reply.parse_mode, 'HTML', '/stores reply carries HTML (header) so it needs parse_mode');
+  assert.ok(reply.text.includes('PriceDrop Hunter · /start · /stores · /stop'), '/stores must end with the footer');
   const buttons = keyboardButtons(reply);
   assert.equal(buttons.length, 9, 'one toggle button per store');
   for (let i = 0; i < 9; i++) {
     assert.equal(buttons[i].callback_data, `store:toggle:${i}`, 'callback data must be store:toggle:<index>');
-    assert.equal(buttons[i].text, `✅ ${STORE_ORDER[i]}`);
+    assert.equal(buttons[i].text, `✅ ${storeLabel(STORE_ORDER[i])}`);
   }
   const rows = reply.reply_markup.inline_keyboard;
   assert.deepEqual(rows.map((r) => r.length), [2, 2, 2, 2, 1], 'two toggle buttons per row');
@@ -505,11 +509,12 @@ test('store toggle flips prefs AND edits the message; toggling back restores it'
   );
   const edit = telegram.calls.find((c) => c.method === 'editMessageText');
   assert.ok(edit, 'toggle must EDIT the message (not send a new one)');
-  assert.ok(edit.text.includes('❌ Amazon Now'), 'edited text must show Amazon Now off: ' + edit.text);
-  assert.ok(edit.text.includes('✅ Blinkit'), 'edited text must keep other stores on: ' + edit.text);
+  assert.equal(edit.parse_mode, 'HTML', 'store toggle edit carries HTML (header) so it needs parse_mode');
+  assert.ok(edit.text.includes(`❌ ${storeLabel('Amazon Now')}`), 'edited text must show Amazon Now off: ' + edit.text);
+  assert.ok(edit.text.includes(`✅ ${storeLabel('Blinkit')}`), 'edited text must keep other stores on: ' + edit.text);
   const editButtons = keyboardButtons(edit);
-  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:0').text, '❌ Amazon Now');
-  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:1').text, '✅ Blinkit');
+  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:0').text, `❌ ${storeLabel('Amazon Now')}`);
+  assert.equal(editButtons.find((b) => b.callback_data === 'store:toggle:1').text, `✅ ${storeLabel('Blinkit')}`);
   assert.deepEqual(
     (await store.getUserPrefs(USER_ID)).stores,
     STORE_ORDER.filter((s) => s !== 'Amazon Now'),
@@ -521,7 +526,7 @@ test('store toggle flips prefs AND edits the message; toggling back restores it'
   await bot.handleUpdate(callbackUpdate(USER_ID, 'store:toggle:0'));
   const edit2 = telegram.calls.find((c) => c.method === 'editMessageText');
   assert.ok(edit2, 'second toggle must edit again');
-  assert.ok(edit2.text.includes('✅ Amazon Now'), 'edited text must show Amazon Now on again: ' + edit2.text);
+  assert.ok(edit2.text.includes(`✅ ${storeLabel('Amazon Now')}`), 'edited text must show Amazon Now on again: ' + edit2.text);
   assert.deepEqual((await store.getUserPrefs(USER_ID)).stores, STORE_ORDER, 'prefs must be back to all 9');
 });
 
@@ -554,9 +559,12 @@ test('/status shows threshold, store count and watchlist count (command + status
   const { store, bot, telegram } = await setup();
   await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
   let reply = lastUserMessage(telegram, USER_ID);
-  assert.match(reply.text, /Min\. discount: 50%/);
-  assert.match(reply.text, /Stores: 9 of 9 enabled/);
-  assert.match(reply.text, /Watchlist: 0 keyword\(s\)/);
+  assert.match(reply.text, /Min\. discount:<\/b> 50%/);
+  assert.match(reply.text, /Stores:<\/b> 9 of 9 enabled/);
+  assert.match(reply.text, /Watchlist:<\/b> 0 keyword\(s\)/);
+  assert.match(reply.text, /<b>🛒 PriceDrop Hunter — Your subscription<\/b>/, 'status must use the design header');
+  assert.ok(reply.text.includes('PriceDrop Hunter · /start · /stores · /stop'), 'status must end with the footer');
+  assert.equal(reply.parse_mode, 'HTML', 'status carries HTML so it needs parse_mode');
 
   // Change all three, then /status again.
   await store.setUserMinDiscount(USER_ID, 30);
@@ -565,18 +573,18 @@ test('/status shows threshold, store count and watchlist count (command + status
   telegram.calls.length = 0;
   await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
   reply = lastUserMessage(telegram, USER_ID);
-  assert.match(reply.text, /Min\. discount: 30%/);
-  assert.match(reply.text, /Stores: 8 of 9 enabled/);
-  assert.match(reply.text, /Watchlist: 1 keyword\(s\)/);
+  assert.match(reply.text, /Min\. discount:<\/b> 30%/);
+  assert.match(reply.text, /Stores:<\/b> 8 of 9 enabled/);
+  assert.match(reply.text, /Watchlist:<\/b> 1 keyword\(s\)/);
   assert.match(reply.text, /Fresh deals every 15 minutes · 30%\+ off/);
 
   // The 'status' inline button shows the same three lines.
   telegram.calls.length = 0;
   await bot.handleUpdate(callbackUpdate(USER_ID, 'status'));
   reply = lastUserMessage(telegram, USER_ID);
-  assert.match(reply.text, /Min\. discount: 30%/);
-  assert.match(reply.text, /Stores: 8 of 9 enabled/);
-  assert.match(reply.text, /Watchlist: 1 keyword\(s\)/);
+  assert.match(reply.text, /Min\. discount:<\/b> 30%/);
+  assert.match(reply.text, /Stores:<\/b> 8 of 9 enabled/);
+  assert.match(reply.text, /Watchlist:<\/b> 1 keyword\(s\)/);
 });
 
 test('/deals returns matching deals for an unsubscribed user, honours prefs, writes no dedupe state', async () => {
@@ -586,6 +594,7 @@ test('/deals returns matching deals for an unsubscribed user, honours prefs, wri
   const replies = userMessages(telegram, USER_ID);
   assert.equal(replies.length, 1, 'fixture deals must fit in one digest message');
   assert.equal(replies[0].parse_mode, 'HTML');
+  assert.equal(replies[0].disable_web_page_preview, true, '/deals must suppress link previews');
   const joined = replies.map((r) => r.text).join('\n');
   assert.ok(joined.includes('Headphones Pro'), 'matching Amazon deal must be shown');
   assert.ok(joined.includes('Cheap Cable'), 'second matching Amazon deal must be shown');
@@ -621,7 +630,14 @@ test('/top returns the single best deal (highest disc) and writes no dedupe stat
   const replies = userMessages(telegram, USER_ID);
   assert.equal(replies.length, 1, '/top must send exactly one message');
   assert.equal(replies[0].parse_mode, 'HTML');
-  assert.match(replies[0].text, /🏆 Top deal right now/);
+  assert.equal(replies[0].disable_web_page_preview, true, '/top must suppress link previews');
+  assert.ok(
+    replies[0].text.includes('<b>🛒 PriceDrop Hunter — Top deal</b>'),
+    '/top must use the design header (no 🏆): ' + replies[0].text
+  );
+  assert.ok(replies[0].text.includes('PriceDrop Hunter · /start · /stores · /stop'), '/top must end with the footer');
+  assert.ok(replies[0].text.includes('<b>₹1,500</b>'), '/top deal price must be bold: ' + replies[0].text);
+  assert.ok(replies[0].text.includes('🚀 Zepto'), '/top deal must carry the store label: ' + replies[0].text);
   assert.ok(replies[0].text.includes('Mixer Grinder'), 'best deal is the 70% Zepto one');
   assert.ok(replies[0].text.includes('70% off'));
   assert.ok(!replies[0].text.includes('Headphones Pro'), 'only the single best deal, not the rest');
@@ -694,6 +710,8 @@ test('/watch add/duplicate/limit/too-long/empty; /unwatch present + absent; /wat
   for (const kw of ['headphones', 'kw1', 'kw9']) {
     assert.ok(listReply.includes(`• ${kw}`), `watchlist must list ${kw}: ` + listReply);
   }
+  assert.ok(listReply.startsWith('🔔 Your watchlist:'), 'watchlist must keep its 🔔 lead line: ' + listReply);
+  assert.ok(listReply.includes('PriceDrop Hunter · /start · /stores · /stop'), 'populated watchlist is multi-line so it gets the footer');
 
   await bot.handleUpdate(messageUpdate(USER_ID, '/unwatch KW1'));
   assert.match(lastUserMessage(telegram, USER_ID).text, /Stopped watching "KW1"\./);
@@ -734,4 +752,125 @@ test('/start and /help both list all 9 stores and all new commands', async () =>
   for (const cmd of newCommands) {
     assert.ok(reply.text.includes(cmd), `/help must list ${cmd}: ` + reply.text);
   }
+});
+
+// ---------- Worker 2 (design-system pass): design.js + new bot formats ----------
+
+const FORBIDDEN_EMOJI = ['👋', '🆓', '📋', '🏬', '💎', '🏆', '📊'];
+const FOOTER_TAIL = 'PriceDrop Hunter · /start · /stores · /stop';
+
+test('design.js: header/footer/cadence/storeLabel/escape/inr follow the pin exactly', () => {
+  assert.equal(header('Welcome'), '<b>🛒 PriceDrop Hunter — Welcome</b>');
+  assert.equal(
+    header('Fresh Deals', 'Thu, 19 Nov 2026'),
+    '<b>🛒 PriceDrop Hunter — Fresh Deals</b>\n📅 Thu, 19 Nov 2026'
+  );
+  assert.equal(footer(), '\n—\n' + FOOTER_TAIL);
+  assert.equal(
+    cadenceLine(50),
+    'Fresh deals every 15 minutes · 50%+ off · duplicates removed'
+  );
+  assert.equal(storeLabel('Amazon Now'), '🛒 Amazon Now');
+  assert.equal(storeLabel('Zepto'), '🚀 Zepto');
+  assert.equal(storeLabel('Unknown Store'), 'Unknown Store', 'unknown store: no emoji, plain escaped name');
+  assert.equal(storeLabel('A <b> & "x"'), 'A &lt;b&gt; &amp; &quot;x&quot;');
+  assert.equal(escapeHtml(null), '');
+  assert.equal(escapeHtml(undefined), '');
+  assert.equal(escapeHtml('<b>&"x"'), '&lt;b&gt;&amp;&quot;x&quot;');
+  assert.equal(noDealsLine(), NO_DEALS_LINE);
+});
+
+test('design.js: dealLine renders bold price + store label, no link when url is empty, truncates long titles', () => {
+  const deal = { title: 'Headphones Pro', price: 999, mrp: 2999, disc: 67, url: 'https://example.com/hp' };
+  assert.equal(
+    dealLine(deal, 'Amazon Now'),
+    '• <a href="https://example.com/hp">Headphones Pro</a> — <b>₹999</b> <s>₹2,999</s> (67% off) — 🛒 Amazon Now'
+  );
+  const noUrl = dealLine({ ...deal, url: '' }, 'Zepto');
+  assert.ok(!noUrl.includes('<a'), 'empty url must produce no link tags: ' + noUrl);
+  assert.ok(noUrl.includes('🚀 Zepto'), 'store label must still be present: ' + noUrl);
+  const long = dealLine({ ...deal, title: 'x'.repeat(200) }, 'Amazon Now', 120);
+  assert.ok(long.length <= 120, 'truncated line must fit maxLen: ' + long.length);
+  assert.ok(long.includes('…'), 'truncated title must end with an ellipsis');
+  assert.ok(long.includes('<b>₹999</b>'), 'truncation must keep the price part intact');
+  const alert = require('../src/design').watchAlert('headphones', deal, 'Amazon Now');
+  assert.ok(alert.startsWith('🔔 <b>Watch alert: "headphones"</b>\n'), 'watch alert lead line: ' + alert);
+  assert.ok(alert.includes(dealLine(deal, 'Amazon Now')), 'watch alert must embed the deal line');
+  assert.ok(alert.endsWith(footer()), 'watch alert must end with the footer');
+});
+
+test('design formats: welcome/help/status/subscribe/stores use header + footer + parse_mode HTML', async () => {
+  const { store, bot, telegram } = await setup();
+  await bot.handleUpdate(messageUpdate(USER_ID, '/start'));
+  let reply = telegram.calls.find((c) => c.method === 'sendMessage');
+  assert.ok(reply.text.startsWith('<b>🛒 PriceDrop Hunter — Welcome</b>'), 'welcome header: ' + reply.text);
+  assert.ok(reply.text.includes('Free subscription — no payment needed.'), 'welcome free line, no 🆓');
+  assert.ok(reply.text.includes(cadenceLine(50)), 'welcome cadence line');
+  assert.ok(reply.text.endsWith(footer()), 'welcome footer');
+  assert.equal(reply.parse_mode, 'HTML', 'welcome carries HTML so it needs parse_mode');
+  for (const s of STORE_ORDER) {
+    assert.ok(reply.text.includes(`• ${storeLabel(s)}`), `welcome store list must use storeLabel for ${s}`);
+  }
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/help'));
+  reply = telegram.calls.at(-1);
+  assert.ok(reply.text.startsWith('<b>🛒 PriceDrop Hunter — Help</b>'), 'help header: ' + reply.text);
+  assert.ok(reply.text.endsWith(footer()), 'help footer');
+  assert.equal(reply.parse_mode, 'HTML');
+
+  await bot.handleUpdate(messageUpdate(USER_ID, '/status'));
+  reply = telegram.calls.at(-1);
+  assert.ok(reply.text.startsWith('<b>🛒 PriceDrop Hunter — Your subscription</b>'), 'status header');
+  assert.ok(reply.text.includes('<b>Status:</b> not subscribed'), 'status bold label');
+  assert.ok(reply.text.includes('Tap /start and hit Subscribe to join — it\'s free.'), 'not-subscribed trailing line kept');
+  assert.ok(reply.text.endsWith(footer()), 'status footer');
+  assert.equal(reply.parse_mode, 'HTML');
+
+  await bot.handleUpdate(callbackUpdate(USER_ID, 'subscribe'));
+  reply = telegram.calls.find((c) => c.method === 'sendMessage' && (c.text || '').includes('🎉'));
+  assert.ok(reply, 'expected a subscribe confirmation');
+  assert.ok(reply.text.includes('🎉 <b>🛒 PriceDrop Hunter — Subscribed</b>'), 'subscribe confirmation: 🎉 + header');
+  assert.ok(reply.text.includes('<b>Next digest:</b>'), 'subscribe confirmation: next digest');
+  assert.ok(reply.text.endsWith(footer()), 'subscribe confirmation footer');
+  assert.equal(reply.parse_mode, 'HTML');
+  assert.ok(!/Happy deal hunting/.test(reply.text), 'trailing 🛒 decoration is gone');
+
+  // /stop keeps its resubscribe line AND gets the footer.
+  await bot.handleUpdate(messageUpdate(USER_ID, '/stop'));
+  reply = telegram.calls.at(-1);
+  assert.match(reply.text, /Tap \/start to subscribe again \(free\)\./, 'stop resubscribe line kept');
+  assert.ok(reply.text.endsWith(footer()), 'stopped reply gets the footer');
+  assert.equal((await store.getSubscriber(USER_ID)).status, 'expired');
+
+  // One-line replies get NO footer: /myid, usage hints, photo replies.
+  await bot.handleUpdate(messageUpdate(USER_ID, '/myid'));
+  assert.ok(!telegram.calls.at(-1).text.includes(FOOTER_TAIL), '/myid is one line: no footer');
+  await bot.handleUpdate(messageUpdate(USER_ID, '/setdiscount'));
+  assert.ok(telegram.calls.at(-1).text.startsWith('Usage: /setdiscount <10-90>'), 'usage hint keeps the single-line Usage shape');
+  assert.ok(!telegram.calls.at(-1).text.includes(FOOTER_TAIL), 'usage hint is one line: no footer');
+  await bot.handleUpdate(photoUpdate(USER_ID));
+  reply = telegram.calls.filter((c) => c.method === 'sendMessage' && c.chat_id === USER_ID).at(-1);
+  assert.ok(!reply.text.includes(FOOTER_TAIL), 'photo reply is one line: no footer');
+
+  // No forbidden emoji in any bot-owned message sent during this run.
+  // (The /deals digest is excluded here: it still comes from the old
+  // digest.js, which W1 owns — its 💎 header is not bot.js output.)
+  for (const call of telegram.calls) {
+    if (typeof call.text !== 'string') continue;
+    for (const emoji of FORBIDDEN_EMOJI) {
+      assert.ok(!call.text.includes(emoji), `forbidden emoji ${emoji} in bot message: ` + call.text);
+    }
+  }
+});
+
+test('design formats: /subscribers admin list uses header + footer + parse_mode HTML', async () => {
+  const { store, bot, telegram } = await setup();
+  await store.upsertSubscriber({ user_id: USER_ID, name: 'Test', username: 'testuser' });
+  await store.setStatus(USER_ID, 'active');
+  await bot.handleUpdate(messageUpdate(ADMIN_ID, '/subscribers'));
+  const reply = telegram.calls.at(-1);
+  assert.ok(reply.text.startsWith('<b>🛒 PriceDrop Hunter — Subscribers</b>'), 'subscribers header: ' + reply.text);
+  assert.match(reply.text, /1 total/, 'subscribers total line');
+  assert.ok(reply.text.endsWith(footer()), 'subscribers footer');
+  assert.equal(reply.parse_mode, 'HTML');
 });

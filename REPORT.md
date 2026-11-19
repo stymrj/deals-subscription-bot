@@ -1,5 +1,172 @@
 # Telegram Subscription Bot — report
 
+## 2026-11-19: Design system (W3 — jobs.js + consistency tests + docs)
+
+**What changed:** a shared design module `src/design.js` (new) is now the
+single source of truth for every user-facing message. Built 2026-11-19 by
+three workers in parallel scratch copies and merged by the coordinator
+into the live tree: W1 did the audit + `src/design.js` + the `src/digest.js`
+rewrite, W2 rewrote `src/bot.js`, W3 rewrote the `src/jobs.js` watch alert
++ the consistency tests + these docs. Nothing pushed, nothing deployed, no
+new env vars, no credentials used. The audit table below is W1's full
+30-message audit.
+
+- **`src/design.js` (new, pinned API — do not change without the
+  coordinator).** Exports `BRAND_NAME`, `STORE_EMOJI`, `MAX_LEN` (3900),
+  `escapeHtml`, `inr`, `istDateLabel`, `istDateTimeLabel`, `storeEmoji`,
+  `storeLabel`, `sectionTitle`, `header`, `footer`, `cadenceLine`,
+  `dealLine`, `noDealsLine`, `watchAlert`. `dealLine` keeps the old
+  digest's title-truncation rule verbatim (shorten the title with `…`,
+  never cut mid-deal); the only rendering changes vs the old digest line
+  are the bold price (`<b>₹price</b>`) and the store via `storeLabel()`
+  (emoji + name). `inr`/`istDateLabel`/`istDateTimeLabel`/`escapeHtml`
+  are copied unchanged from the old `digest.js`.
+- **`src/jobs.js` (only the watch-alert send).** The alert is now
+  `watchAlert(hit, deal, store)` from `./design` — `🔔 <b>Watch alert:
+  "keyword"</b>` + shared `dealLine` + shared `footer()`. The old inline
+  format (`🔔 Watch alert: {keyword} — {dealLine}`) is gone; `dealLine`
+  is no longer imported from `./digest`. Behaviour unchanged: one alert
+  per fresh matching deal per user, first matching keyword wins, skipped
+  when the digest send just failed, dedupe marking unchanged, and the
+  `formatDigest` call stays as-is.
+- **`tests/jobs.test.js` (alert assertions only).** The `alertsTo` /
+  `digestsTo` helpers now match the new `🔔 <b>Watch alert:` prefix, the
+  keyword-match test asserts the alert equals `watchAlert('ghee', deal,
+  'Zepto')` exactly (plus the shared footer), and the two-keyword test
+  asserts the first keyword wins by its quoted bold form. All behaviour
+  assertions are intact.
+
+### Audit table — every user-facing message before the redesign
+
+(30 messages; full per-message audit by W1 — header, deal format, store rendering, footer, emoji. `api/` sends no user-facing messages — webhook/cron endpoints return JSON only.)
+
+| message | file | header | deal format | store rendering | footer | emoji | inconsistency noted |
+|---|---|---|---|---|---|---|---|
+| /start welcome (`welcomeText`) | src/bot.js | `👋 Welcome to PriceDrop Hunter!` (plain text, no `<b>`, no 🛒 header) | n/a (no deals) | store list in `commandsText`: plain `• Name`, no emoji | none | 👋 🆓 | Header is a wave, not the 🛒 brand header; 🆓 not in pinned set; no footer; free-sub line duplicated verbatim in /help |
+| /help | src/bot.js | `PriceDrop Hunter — Fresh Deals` (plain text, no `<b>`, no 🛒) | n/a | same plain `• Name` store list via `commandsText` | none | 🆓 | Header differs from /start AND from digest header (`<b>🛒 … — Fresh Deals</b>`); 🆓 not pinned; no footer |
+| /status (`statusText`, also status button) | src/bot.js | `📋 Your subscription` (plain text) | n/a | `Stores: N of 9 enabled` (count only, no names) | none | 📋 | 📋 not pinned; cadence line here reads `Fresh deals every 15 minutes · {min}%+ off · duplicates removed` — same words as digest header but different order (`{min}%+ off` first in digest); no footer; "not subscribed" variant appends a subscribe nudge with no header/footer |
+| /stop — not subscribed | src/bot.js | none (single plain sentence) | n/a | n/a | none | none | Plain sentence; inconsistent with /stop success (also plain) but both differ from every headed message |
+| /stop — success | src/bot.js | none (plain sentence) | n/a | n/a | none | none | No confirmation affordance (no ✅, no footer, no /start hint beyond inline text) |
+| /myid | src/bot.js | none (`Your Telegram id is: …`) | n/a | n/a | none | none | Plain; fine for a utility reply, but no shared format |
+| /stores (`storesText`, also toggle edit) | src/bot.js | `🏬 Your stores` (plain text) | n/a | `✅ Name` / `❌ Name`, plain names, no store emoji; same ✅/❌ in inline-keyboard buttons | none | 🏬 ✅ ❌ | 🏬 not pinned; store names carry no store emoji (digest deal lines will); ✅/❌ are pinned, keep |
+| /setdiscount — usage | src/bot.js | none (`Usage: /setdiscount <10-90> — …`) | n/a | n/a | none | none | Usage-hint style differs from /watch and /unwatch usage hints only in wording; all three are plain |
+| /setdiscount — success | src/bot.js | none (`✅ Minimum discount set to …`) | n/a | n/a | none | ✅ | ✅ is pinned; no footer |
+| /deals — empty (`NO_DEALS_LINE`) | src/bot.js | none (one-liner) | n/a | n/a | none | none | Matches pinned `noDealsLine()` verbatim — already consistent; only message that is |
+| /deals — results | src/bot.js via src/digest.js | digest header (see below) | digest deal line (see below) | digest store heading (see below) | digest footer (see below) | 🛒 📅 💎 | Inherits all digest inconsistencies |
+| /top | src/bot.js | `<b>🏆 Top deal right now</b>` | `dealLine(best, store)` — same builder as digest | plain store name at end of deal line (`— Zepto`), no emoji | none | 🏆 | 🏆 not pinned; header style (bold, emoji-first) matches digest header shape but uses a different emoji and no date line; no footer |
+| /watch — usage | src/bot.js | none (`Usage: /watch <keyword> — …`) | n/a | n/a | none | none | Plain usage hint |
+| /watch — too long | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain error; same wording shape as /unwatch too-long |
+| /watch — added | src/bot.js | none (`🔔 Watching "kw" — …`) | n/a | n/a | none | 🔔 | 🔔 is pinned; keyword is NOT escaped (raw interpolation into a plain-text reply — safe today only because parse_mode is unset); no footer |
+| /watch — limit (10) | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain error |
+| /watch — duplicate | src/bot.js | none (`You're already watching "kw".`) | n/a | n/a | none | none | Plain; keyword unescaped (same caveat as added) |
+| /unwatch — usage | src/bot.js | none (`Usage: /unwatch <keyword> — …`) | n/a | n/a | none | none | Plain usage hint |
+| /unwatch — too long | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain error |
+| /unwatch — removed | src/bot.js | none (`Stopped watching "kw".`) | n/a | n/a | none | none | No ✅/❌ confirmation marker, unlike /setdiscount success (✅) |
+| /unwatch — absent | src/bot.js | none (`"kw" wasn't in your watchlist.`) | n/a | n/a | none | none | Plain |
+| /watchlist — empty | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain |
+| /watchlist — populated | src/bot.js | none (`🔔 Your watchlist:`) | n/a (keyword bullets `• kw`, not deal lines) | n/a | none | 🔔 | 🔔 is pinned; keywords unescaped; no footer |
+| /subscribers — admin | src/bot.js | none (`📊 Subscribers: N total`) | n/a | n/a | none | 📊 | 📊 not pinned; admin-only message, lowest priority for redesign |
+| /subscribers, /broadcast — non-admin | src/bot.js | none (`This command is for the admin only.`) | n/a | n/a | none | none | Plain refusal; same string for both commands |
+| /broadcast — usage | src/bot.js | none (`Usage: /broadcast <text>`) | n/a | n/a | none | none | Plain usage hint |
+| /broadcast — result | src/bot.js | none (`Sent to N subscribers, M failed.`) | n/a | n/a | none | none | Plain admin result |
+| subscribe button reply | src/bot.js | none (`🎉 You're subscribed — for free!`) | n/a | n/a | none | 🎉 🛒 | 🎉 and 🛒 both pinned; but no 🛒 brand header, no footer, and the cadence is restated in different words (`Fresh deals arrive every 15 minutes.` vs the digest's `Fresh deals every 15 minutes · …`) |
+| photo — active subscriber | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain; restates cadence in yet another wording |
+| photo — not subscribed | src/bot.js | none (plain sentence) | n/a | n/a | none | none | Plain |
+| free-text (`bot.on('text')`) | src/bot.js | — (ignored, no reply) | — | — | — | — | No message; listed for completeness |
+| digest header block | src/digest.js (`formatDigest`) | `<b>🛒 PriceDrop Hunter — Fresh Deals</b>` + `📅 {IST date · time}` | n/a | n/a | n/a (footer is a separate block) | 🛒 📅 💎 | 💎 not pinned (must go); cadence line reads `{min}%+ off · fresh deals every 15 minutes · duplicates removed` — word order differs from `statusText`'s cadence line and from pinned `cadenceLine()` (`Fresh deals every 15 minutes · {min}%+ off · duplicates removed`) |
+| digest store heading | src/digest.js (`formatDigest`) | n/a | n/a | `\n<b>{Store}</b>` — plain name, no emoji | n/a | none | No store emoji, unlike pinned `sectionTitle()` (`<b>{emoji} {Store}</b>`) |
+| digest deal line (`dealLine`) | src/digest.js | n/a | `• <a href="url">Title</a> — <b>₹price</b> <s>₹mrp</s> (disc% off) — {Store}`; no URL → plain title, no `<a>`; over-long title shortened with `…` | plain store name at line end, no emoji | n/a | none | Deal format itself is the reference the pin keeps — only the store rendering changes (emoji prefix). Title truncation rule kept as-is |
+| digest footer block | src/digest.js (`formatDigest`) | n/a | n/a | n/a | `\n—\nPriceDrop Hunter · Manage your subscription: /start · Stop anytime with /stop` | none | Wording differs from pinned `footer()` (`PriceDrop Hunter · /start · /stores · /stop`); no `/stores` link |
+| digest dropped-deals note | src/digest.js (`splitMessages`) | n/a | n/a | n/a | n/a (appended to last message) | none | `… +N more deal(s) in the next update` — cadence-consistent already ("next update", not "tomorrow's digest") |
+| digest — empty input | src/digest.js (`formatDigest`) | — (returns `[]`, sends nothing) | — | — | — | — | No message by design; empty stores omitted, no "no deals" line at 15-min cadence |
+| digest send (scheduled) | src/jobs.js (`runDigest`) | digest header | digest deal line | digest store heading | digest footer | 🛒 📅 💎 | Same as digest — inherits its inconsistencies; send uses `{ parse_mode: 'HTML', disable_web_page_preview: true }` |
+| watch alert (scheduled) | src/jobs.js (`runDigest`) | none (`🔔 Watch alert: {keyword} — {dealLine}`) | `dealLine(deal, store)` inline, same builder as digest | plain store name at end of deal line | none | 🔔 | Three deviations from pinned `watchAlert()`: keyword NOT escaped and NOT bold/quoted (`{keyword}` vs `"<b>Watch alert: "{keyword}"</b>`); alert and deal on ONE line joined by ` — ` instead of newline-separated; no footer. Also the `alertsTo` test helper keys off the `🔔 Watch alert:` prefix, so W3 must update jobs.js + jobs.test.js together |
+| `sendToSubscribers` / `notifyAdmin` | src/bot.js | n/a (pass-through: sends caller-supplied text) | n/a | n/a | n/a | n/a | No fixed copy of their own; digest text sent through them inherits digest design |
+
+### Design rules (pinned)
+
+- **Header** — `header(title, dateLabel)` = `<b>🛒 PriceDrop Hunter —
+  {title}</b>` plus an optional `\n📅 {date}` line. Every multi-line
+  message opens with it.
+- **Footer rule** — `footer()` (`\n—\nPriceDrop Hunter · /start ·
+  /stores · /stop`) goes on **every message longer than one line** and on
+  **no one-line reply**. The no-deals one-liner carries no footer.
+- **Cadence** — `cadenceLine(min)` = `Fresh deals every 15 minutes ·
+  {min}%+ off · duplicates removed`, used by the digest, `/start`,
+  `/help` and `/status` — never retyped.
+- **Deal line** — `dealLine(deal, store)` is byte-identical in the digest,
+  `/deals`, `/top` and watch alerts: `• <a href="{url}">Title</a> —
+  <b>₹price</b> <s>₹mrp</s> ({disc}% off) — {emoji} {store}`; no `<a>`
+  tags when the deal has no URL.
+- **Length cap** — no message exceeds 3900 chars; long titles truncate
+  with `…`, never cut mid-deal.
+- **Emoji set** — functional emoji ONLY: 🛒 brand header, 📅 date line,
+  🔔 watch alert, ✅ on/success, ❌ off, 🎉 subscribe confirmation. No
+  other emoji anywhere. Store emoji only from `STORE_EMOJI`:
+  Amazon Now 🛒, Blinkit ⚡, Flipkart Minutes 🛍️, BigBasket 🧺, Myntra
+  👗, Croma 📱, Zepto 🚀, Swiggy Instamart 🍔, JioMart 🏪.
+- **Escaping** — all user-controlled text (titles, keywords, store
+  names) is HTML-escaped before it enters a Telegram HTML message.
+- **Empty states** — `/deals` and `/top` with nothing matching reply the
+  `noDealsLine()` one-liner exactly once.
+
+### Judgement calls (for the coordinator)
+
+- **Watch alerts have no header line.** Per the pinned `watchAlert()`
+  (`🔔 <b>Watch alert: "…"</b>` + `dealLine` + `footer()`), the alert
+  shares `footer()`/`storeLabel()`/`dealLine()` with the other surfaces
+  but not `header()` — the tests assert exactly that, not a header on
+  alerts.
+- **Digest title stays `Fresh Deals`.** The tests assert the digest opens
+  with `header('Fresh Deals', istDateTimeLabel(date))`, retaining the old
+  digest's title.
+- **`/top` shortens the deal line to fit the cap (coordinator fix at
+  merge).** The old `/top` prepended its header to a full 3900-char
+  `dealLine` (measured 3929 chars). The merged `/top` passes a reduced
+  `maxLen` to `dealLine` (cap minus header, newline and footer), so
+  header + deal + footer stay ≤ 3900 — the length test enforces this.
+- **`package.json` description fixed at merge** (said "daily 9 AM IST
+  digest"; now "fresh deals every 15 minutes").
+- **The pinned `dealLine` truncation rule was copied verbatim from the
+  old `digest.js`**, including its escape-length quirk (the kept length
+  is computed from the escaped title length, so a title heavy in `&<>`
+  can land a few chars over the requested cap). Not changed: the pin
+  says "same title-truncation rule as today".
+
+### Test evidence (merged tree, 2026-11-19)
+
+`npm test`: **141 tests, 141 pass, 0 fail** (baseline 113 + 7 new digest
+tests + 4 new bot tests + 17 new design tests). `npm run digest:dry`
+works (2 messages from fixtures, new design). Coordinator fixes at
+merge (all covered by tests, no worker code changed otherwise):
+- `/top` budgets its deal line (cap minus header/newline/footer) — was
+  3984 chars, now ≤ 3900.
+- `/deals` header assertion compares the title line + IST date-line
+  shape, not a fixed date — `/deals` renders the live date (the digest
+  assertion with an explicit date already proves the full header).
+- `ALL_STORES_FEEDS` fixture makes Zepto's deal strictly best (61% vs
+  60%) so the /top sweep has one unambiguous best deal.
+- `package.json` description fixed ("daily 9 AM IST digest" →
+  "fresh deals every 15 minutes").
+
+- **New coverage:** 10 `design unit` tests (emoji map, escaping/`inr`,
+  IST labels, `storeEmoji` / `storeLabel` / `sectionTitle`, `header` /
+  `footer` / `cadenceLine`, `dealLine` format + empty-URL + escaping,
+  truncation, `noDealsLine`, `watchAlert` composition, pinned-emoji-only
+  helper output); 7 `design consistency` tests (shared header/footer
+  across /start, digest, /deals, /top; `dealLine` byte-identical across
+  digest, /deals, /top, watch alerts; one identical emoji per store
+  everywhere; ≤ 3900 chars with truncation-never-mid-deal; empty states
+  reply `noDealsLine()` exactly once; watch alert equals
+  `design.watchAlert()` exactly; pinned-emoji-only scan of all bot
+  messages). All pre-existing suites pass, including all `jobs.test.js`
+  watch-alert tests against the new format.
+- **Greps (merged tree):** `dealLine` defined once, in `src/design.js`
+  only; no emoji outside the pinned functional set + store map in `src/`
+  (python code-point scan); no remaining old inline formats (no 👋 🆓 📋
+  🏬 💎 🏆 📊, no `Watch alert: ${hit}`, no old digest footer); no
+  `daily` / `9 AM` copy in `src/` + `api/`; no real tokens/values.
+
 ## 2026-11-19: Feature upgrade — /stores, /setdiscount, /deals + /top, /watch (current state)
 
 **What changed:** on 2026-11-19 Satyam said the bot was "too much basic

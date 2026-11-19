@@ -4,63 +4,15 @@
 // Cadence: fresh deals every 15 minutes (dedupe lives in the jobs layer),
 // so stores with no new deals are omitted entirely and an empty digest
 // sends nothing (returns []).
+// All message formatting lives in src/design.js; this module only
+// assembles the digest blocks from it.
 'use strict';
 
 const { STORE_ORDER } = require('./feed');
-
-const MAX_LEN = 3900;      // Telegram limit is 4096; stay safely under it.
+const design = require('./design');
+const { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine } = design;
+const MAX_LEN = design.MAX_LEN;
 const MAX_MESSAGES = 2;
-
-function escapeHtml(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function inr(n) {
-  return '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
-}
-
-// IST date, e.g. "Tue, 10 Nov 2026". Accepts a Date, an ISO string, or nothing (= now).
-function istDateLabel(date) {
-  const d = date ? new Date(date) : new Date();
-  // "Tue, 10 Nov 2026" — built from parts because Intl en-IN renders
-  // "Tue, 10 Nov, 2026" (extra comma after the month).
-  const parts = new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
-  }).formatToParts(d);
-  const get = t => (parts.find(p => p.type === t) || {}).value || '';
-  return `${get('weekday')}, ${get('day')} ${get('month')} ${get('year')}`;
-}
-
-// IST date + time, e.g. "Thu, 19 Nov 2026 · 6:15 PM IST".
-// Accepts a Date, an ISO string, or nothing (= now).
-function istDateTimeLabel(date) {
-  const d = date ? new Date(date) : new Date();
-  const parts = new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  }).formatToParts(d);
-  const get = t => (parts.find(p => p.type === t) || {}).value || '';
-  // en-IN renders the day period lowercase ("pm"); the digest shows "PM".
-  return `${get('weekday')}, ${get('day')} ${get('month')} ${get('year')} · ${get('hour')}:${get('minute')} ${get('dayPeriod').toUpperCase()} IST`;
-}
-
-// One deal line. If it would exceed maxLen on its own, shorten the title
-// (never truncate mid-deal / mid-line anywhere else).
-function dealLine(deal, store, maxLen = MAX_LEN) {
-  const pricePart = `${inr(deal.price)} <s>${inr(deal.mrp)}</s> (${deal.disc}% off) — ${escapeHtml(store)}`;
-  const url = String(deal.url || '');
-  const linkOpen = url ? `<a href="${escapeHtml(url)}">` : '';
-  const linkClose = url ? '</a>' : '';
-  let title = String(deal.title || '');
-  let line = `• ${linkOpen}${escapeHtml(title)}${linkClose} — ${pricePart}`;
-  if (line.length > maxLen) {
-    const overhead = line.length - escapeHtml(title).length;
-    const keep = Math.max(10, maxLen - overhead - 1); // room for '…'
-    title = title.slice(0, keep) + '…';
-    line = `• ${linkOpen}${escapeHtml(title)}${linkClose} — ${pricePart}`;
-  }
-  return line;
-}
 
 // Split pre-built blocks (each block is one indivisible unit: header, one
 // store heading, ONE deal line, footer) into <= maxMessages messages of
@@ -117,18 +69,19 @@ function formatDigest(dealsByStore, config = {}) {
 
   const blocks = [];
   blocks.push(
-    `<b>🛒 PriceDrop Hunter — Fresh Deals</b>\n📅 ${dateTimeLabel}\n${min}%+ off · fresh deals every 15 minutes · duplicates removed\n💎 Free subscriber digest — prices change fast, check the link before buying.`,
+    design.header('Fresh Deals', dateTimeLabel) + '\n' + design.cadenceLine(min) +
+    '\nFree subscriber digest — prices change fast, check the link before buying.',
   );
 
   for (const [store, deals] of perStore) {
-    blocks.push(`\n<b>${escapeHtml(store)}</b>`);
+    blocks.push(`\n${design.sectionTitle(store)}`);
     // Reserve room for the header/store-heading/footer blocks so a
     // single near-limit deal still fits in one message with them.
     for (const deal of deals) blocks.push(dealLine(deal, store, MAX_LEN - 350));
   }
-  blocks.push(`\n—\nPriceDrop Hunter · Manage your subscription: /start · Stop anytime with /stop`);
+  blocks.push(design.footer());
 
   return splitMessages(blocks, MAX_LEN, MAX_MESSAGES);
 }
 
-module.exports = { escapeHtml, istDateLabel, istDateTimeLabel, dealLine, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };
+module.exports = { escapeHtml, inr, istDateLabel, istDateTimeLabel, dealLine, splitMessages, formatDigest, MAX_LEN, MAX_MESSAGES };

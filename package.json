@@ -1,7 +1,7 @@
 {
   "name": "deals-subscription-bot",
   "version": "0.1.0",
-  "description": "Telegram bot for PriceDrop Hunter daily deal digests — free subscription, daily 9 AM IST digest from the 9 scanner repos' feed branches",
+  "description": "Telegram bot for PriceDrop Hunter deal digests — free subscription, fresh deals every 15 minutes from the 9 scanner repos' feed branches",
   "private": true,
   "type": "commonjs",
   "main": "src/index.js",
